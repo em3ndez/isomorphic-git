@@ -1,13 +1,15 @@
 // @ts-check
 import '../typedefs.js'
 
-import { MultipleGitError } from '../errors/MultipleGitError'
+import { MultipleGitError } from '../errors/MultipleGitError.js'
 import { NotFoundError } from '../errors/NotFoundError.js'
+import { GitConfigManager } from '../managers/GitConfigManager.js'
 import { GitIgnoreManager } from '../managers/GitIgnoreManager.js'
 import { GitIndexManager } from '../managers/GitIndexManager.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { _writeObject } from '../storage/writeObject.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 import { posixifyPathBuffer } from '../utils/posixifyPathBuffer.js'
 
@@ -47,21 +49,40 @@ export async function add({
     assertParameter('filepath', filepath)
 
     const fs = new FileSystem(_fs)
-    await GitIndexManager.acquire({ fs, gitdir, cache }, async index => {
-      return addToIndex({
-        dir,
-        gitdir,
-        fs,
-        filepath,
-        index,
-        force,
-        parallel,
-      })
-    })
+    const updatedGitdir = await discoverGitdir({ fsp: fs, dotgit: gitdir })
+    await GitIndexManager.acquire(
+      { fs, gitdir: updatedGitdir, cache },
+      async index => {
+        const config = await GitConfigManager.get({ fs, gitdir: updatedGitdir })
+        const autocrlf = await config.get('core.autocrlf')
+        return addToIndex({
+          dir,
+          gitdir: updatedGitdir,
+          fs,
+          filepath,
+          index,
+          force,
+          parallel,
+          autocrlf,
+        })
+      }
+    )
   } catch (err) {
     err.caller = 'git.add'
     throw err
   }
+}
+
+// True for a path the index already holds, and for a folder holding one. The
+// exact lookup is a Map hit; the prefix scan only runs for folders, since a
+// tracked file always answers on the first check.
+function isTracked(index, filepath) {
+  if (index.has({ filepath })) return true
+  const prefix = `${filepath}/`
+  for (const entry of index.entriesMap.keys()) {
+    if (entry.startsWith(prefix)) return true
+  }
+  return false
 }
 
 async function addToIndex({
@@ -72,11 +93,15 @@ async function addToIndex({
   index,
   force,
   parallel,
+  autocrlf,
 }) {
-  // TODO: Should ignore UNLESS it's already in the index.
   filepath = Array.isArray(filepath) ? filepath : [filepath]
   const promises = filepath.map(async currentFilepath => {
-    if (!force) {
+    // .gitignore governs untracked paths. Once a path is in the index, adding a
+    // matching rule does not stop canonical git from staging further changes,
+    // and an ignored folder is still walked for the sake of what it tracks:
+    // the recursion below re-checks every child, so only tracked ones get in.
+    if (!force && !isTracked(index, currentFilepath)) {
       const ignored = await GitIgnoreManager.isIgnored({
         fs,
         dir,
@@ -100,6 +125,7 @@ async function addToIndex({
             index,
             force,
             parallel,
+            autocrlf,
           })
         )
         await Promise.all(promises)
@@ -113,13 +139,14 @@ async function addToIndex({
             index,
             force,
             parallel,
+            autocrlf,
           })
         }
       }
     } else {
       const object = stats.isSymbolicLink()
         ? await fs.readlink(join(dir, currentFilepath)).then(posixifyPathBuffer)
-        : await fs.read(join(dir, currentFilepath))
+        : await fs.read(join(dir, currentFilepath), { autocrlf })
       if (object === null) throw new NotFoundError(currentFilepath)
       const oid = await _writeObject({ fs, gitdir, type: 'blob', object })
       index.insert({ filepath: currentFilepath, stats, oid })

@@ -1,9 +1,17 @@
 /* eslint-env node, browser, jasmine */
-const path = require('path')
+import * as path from 'path'
 
-const { status, add, remove } = require('isomorphic-git')
+import {
+  status,
+  add,
+  commit,
+  init,
+  remove,
+  setConfig,
+  statusMatrix,
+} from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('status', () => {
   it('status', async () => {
@@ -77,5 +85,75 @@ describe('status', () => {
     expect(a).toEqual('*added')
     const b = await status({ fs, dir, gitdir, filepath: 'b.txt' })
     expect(b).toEqual('added')
+  })
+
+  it('does not modify .git/index when refresh is false', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-status')
+    // Take an unmodified tracked file and bump its workdir mtime without
+    // changing contents, so the racy stat-cache refresh would normally fire.
+    const original = await fs.read(path.join(dir, 'a.txt'))
+    await fs.write(path.join(dir, 'a.txt'), original)
+    // Snapshot the index file
+    const indexBefore = await fs.read(path.join(gitdir, 'index'))
+    // Read-only status call
+    const a = await status({
+      fs,
+      dir,
+      gitdir,
+      filepath: 'a.txt',
+      refresh: false,
+    })
+    expect(a).toEqual('unmodified')
+    const indexAfter = await fs.read(path.join(gitdir, 'index'))
+    expect(indexAfter).toEqual(indexBefore)
+  })
+
+  it('tracked file that matches a .gitignore rule', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-add')
+    await init({ fs, dir, gitdir })
+    // Track the file before it becomes ignored, then change it on disk.
+    await add({ fs, dir, gitdir, filepath: 'i.txt' })
+    await fs.write(path.join(dir, '.gitignore'), 'i.txt\n')
+    await fs.write(path.join(dir, 'i.txt'), 'changed after being ignored')
+    // Test
+    // .gitignore applies to untracked files only. canonical git reports this
+    // file as modified, and `git check-ignore` does not match it at all.
+    expect(await status({ fs, dir, gitdir, filepath: 'i.txt' })).toEqual(
+      '*added'
+    )
+  })
+
+  it('honours core.autocrlf when hashing the working copy', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-empty')
+    await init({ fs, dir, gitdir })
+    await setConfig({ fs, dir, gitdir, path: 'core.autocrlf', value: true })
+    await fs.write(path.join(dir, 'a.txt'), 'one\ntwo\n')
+    await add({ fs, dir, gitdir, filepath: 'a.txt' })
+    await commit({
+      fs,
+      dir,
+      gitdir,
+      message: 'initial',
+      author: { name: 'Test', email: 'test@example.com' },
+    })
+    // The blob is stored with LF and the working copy carries CRLF. This
+    // library never writes CRLF, so on a real machine the working copy got
+    // that way from canonical git, an editor, or a syncing tool.
+    await fs.write(path.join(dir, 'a.txt'), 'one\r\ntwo\r\n')
+    // Test
+    // status has to come first. statusMatrix refreshes the index stat cache,
+    // and once the cached stats match the CRLF file on disk, status returns the
+    // indexed oid without hashing anything, which hides the bug.
+    expect(await status({ fs, dir, gitdir, filepath: 'a.txt' })).toEqual(
+      'unmodified'
+    )
+    // GitWalkerFs already reads with the autocrlf option, so statusMatrix
+    // agrees the file is untouched either way.
+    expect(await statusMatrix({ fs, dir, gitdir })).toEqual([
+      ['a.txt', 1, 1, 1],
+    ])
   })
 })

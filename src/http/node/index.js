@@ -17,10 +17,13 @@ export async function request({
   method = 'GET',
   headers = {},
   agent,
+  fetchOptions = {},
   body,
+  signal,
 }) {
   // If we can, we should send it as a single buffer so it sets a Content-Length header.
   if (body && Array.isArray(body)) {
+    // @ts-expect-error
     body = Buffer.from(await collect(body))
   } else if (body) {
     body = asyncIteratorToStream(body)
@@ -28,11 +31,13 @@ export async function request({
   return new Promise((resolve, reject) => {
     get(
       {
+        ...fetchOptions,
         url,
         method,
         headers,
         agent,
         body,
+        signal: signal ?? fetchOptions.signal,
       },
       (err, res) => {
         if (err) return reject(err)

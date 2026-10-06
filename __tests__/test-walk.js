@@ -1,8 +1,21 @@
 // @ts-nocheck
 /* eslint-env node, browser, jasmine */
-const { walk, WORKDIR, TREE, STAGE } = require('isomorphic-git')
+import {
+  Errors,
+  walk,
+  WORKDIR,
+  TREE,
+  STAGE,
+  setConfig,
+  add,
+  commit,
+  hashBlob,
+  init,
+  writeRef,
+  updateIndex,
+} from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('walk', () => {
   it('can walk using WORKDIR, TREE, and STAGE', async () => {
@@ -37,11 +50,13 @@ describe('walk', () => {
   it('can populate type, mode, oid, and content', async () => {
     // Setup
     const { fs, dir, gitdir } = await makeFixture('test-walk')
+
     // BrowserFS has a design quirk where HTTPRequestFS has a default mode of 555 for everything,
     // meaning that files have the executable bit set by default!
     const isBrowserFS = !!fs._original_unwrapped_fs.getRootFS
     const FILEMODE = isBrowserFS ? 0o100755 : 0o100644
     const SYMLINKMODE = isBrowserFS ? 0o100755 : 0o120000
+
     // Test
     const matrix = await walk({
       fs,
@@ -247,8 +262,8 @@ describe('walk', () => {
         {
           type: 'blob',
           mode: SYMLINKMODE,
-          content: '',
-          oid: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          content: '1.txt',
+          oid: '7999426c516ffbbae9136d93dc44e89091d35a13',
           hasStat: true,
         },
         null,
@@ -261,5 +276,572 @@ describe('walk', () => {
         },
       ],
     ])
+  })
+
+  it('autocrlf respected when gitconfig changes', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+    // BrowserFS has a design quirk where HTTPRequestFS has a default mode of 555 for everything,
+    // meaning that files have the executable bit set by default!
+
+    const isBrowserFS = !!fs._original_unwrapped_fs.getRootFS
+    const FILEMODE = isBrowserFS ? 0o100755 : 0o100644
+    const SYMLINKMODE = isBrowserFS ? 0o100755 : 0o120000
+    const toWalkerResult = async walker => {
+      return {
+        type: await walker.type(),
+        mode: await walker.mode(),
+        oid: await walker.oid(),
+        content:
+          (await walker.content()) &&
+          Buffer.from(await walker.content()).toString('utf8'),
+        hasStat: !!(await walker.stat()),
+      }
+    }
+
+    // Test
+    let matrix = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR(), TREE({ ref: 'HEAD' }), STAGE()],
+      map: async (filepath, [workdir, tree, stage]) => [
+        filepath,
+        workdir && (await toWalkerResult(workdir)),
+        tree && (await toWalkerResult(tree)),
+        stage && (await toWalkerResult(stage)),
+      ],
+    })
+
+    const expectedMatrix = [
+      [
+        '.',
+        {
+          type: 'tree',
+          mode: 0o40000,
+          content: undefined,
+          oid: undefined,
+          hasStat: true,
+        },
+        {
+          type: 'tree',
+          mode: 0o40000,
+          content: undefined,
+          oid: '49a23584c8bc3a928250e5fd164131f2eb0f2e4c',
+          hasStat: false,
+        },
+        {
+          type: 'tree',
+          mode: undefined,
+          content: undefined,
+          oid: undefined,
+          hasStat: false,
+        },
+      ],
+      [
+        'a.txt',
+        {
+          type: 'blob',
+          mode: FILEMODE,
+          content: 'Hello\n',
+          oid: 'e965047ad7c57865823c7d992b1d046ea66edf78',
+          hasStat: true,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: 'Hello\n',
+          oid: 'e965047ad7c57865823c7d992b1d046ea66edf78',
+          hasStat: false,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: undefined,
+          oid: 'e965047ad7c57865823c7d992b1d046ea66edf78',
+          hasStat: true,
+        },
+      ],
+      [
+        'b.txt',
+        {
+          type: 'blob',
+          mode: FILEMODE,
+          content: 'world!!!',
+          oid: '77787b8f756d76b1d470f0dbb919d5d35dc55ef8',
+          hasStat: true,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: 'world!',
+          oid: 'c944ebc28f05731ef588ac6298485ba5e8bf3704',
+          hasStat: false,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: undefined,
+          oid: 'c944ebc28f05731ef588ac6298485ba5e8bf3704',
+          hasStat: true,
+        },
+      ],
+      [
+        'c.txt',
+        null,
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: '!!!',
+          oid: '08faabdc782b92e1e8d371fdd13b30c0a3f54676',
+          hasStat: false,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: undefined,
+          oid: '08faabdc782b92e1e8d371fdd13b30c0a3f54676',
+          hasStat: true,
+        },
+      ],
+      [
+        'd.txt',
+        {
+          type: 'blob',
+          mode: FILEMODE,
+          content: 'Hello again',
+          oid: '895a23b41a53a99670b5fd4092e4199e3a328e02',
+          hasStat: true,
+        },
+        null,
+        null,
+      ],
+      [
+        'folder',
+        {
+          type: 'tree',
+          mode: 0o40000,
+          content: undefined,
+          oid: undefined,
+          hasStat: true,
+        },
+        {
+          type: 'tree',
+          mode: 0o40000,
+          content: undefined,
+          oid: '341e54913a3a43069f2927cc0f703e5a9f730df1',
+          hasStat: false,
+        },
+        {
+          type: 'tree',
+          mode: undefined,
+          content: undefined,
+          oid: undefined,
+          hasStat: false,
+        },
+      ],
+      [
+        'folder/1.txt',
+        {
+          type: 'blob',
+          mode: FILEMODE,
+          content: '',
+          oid: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          hasStat: true,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: '',
+          oid: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          hasStat: false,
+        },
+        {
+          type: 'blob',
+          mode: 0o100644,
+          content: undefined,
+          oid: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          hasStat: true,
+        },
+      ],
+      [
+        'folder/2.txt',
+        {
+          type: 'blob',
+          mode: FILEMODE,
+          content: '',
+          oid: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          hasStat: true,
+        },
+        null,
+        null,
+      ],
+      [
+        'folder/3.txt',
+        {
+          type: 'blob',
+          mode: SYMLINKMODE,
+          content: '1.txt',
+          oid: '7999426c516ffbbae9136d93dc44e89091d35a13',
+          hasStat: true,
+        },
+        null,
+        {
+          type: 'blob',
+          mode: 0o120000,
+          content: undefined,
+          oid: '7999426c516ffbbae9136d93dc44e89091d35a13',
+          hasStat: true,
+        },
+      ],
+    ]
+    expect(matrix).toEqual(expectedMatrix)
+
+    // Check oid + content updates when changing autocrlf to true
+    await setConfig({
+      fs,
+      gitdir,
+      path: 'core.autocrlf',
+      value: true,
+    })
+    await fs.write(dir + '/a.txt', 'Hello\r\nagain', {
+      mode: 0o666,
+    })
+
+    matrix = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR(), TREE({ ref: 'HEAD' }), STAGE()],
+      map: async (filepath, [workdir, tree, stage]) => [
+        filepath,
+        workdir && (await toWalkerResult(workdir)),
+        tree && (await toWalkerResult(tree)),
+        stage && (await toWalkerResult(stage)),
+      ],
+    })
+
+    // core.autocrlf is true \r\n should be replaced with \n
+    expectedMatrix[1][1] = {
+      type: 'blob',
+      mode: 0o100644,
+      content: 'Hello\nagain',
+      oid: 'e855bd8b67cc7ee321e4dec1b9e5b17e13aec8e1',
+      hasStat: true,
+    }
+    expectedMatrix[1][3].mode = FILEMODE
+    expectedMatrix[6][3].mode = FILEMODE
+    expect(matrix).toEqual(expectedMatrix)
+
+    // Check oid + content updates when changing autocrlf back to false
+    await setConfig({
+      fs,
+      gitdir,
+      path: 'core.autocrlf',
+      value: false,
+    })
+
+    matrix = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR(), TREE({ ref: 'HEAD' }), STAGE()],
+      map: async (filepath, [workdir, tree, stage]) => [
+        filepath,
+        workdir && (await toWalkerResult(workdir)),
+        tree && (await toWalkerResult(tree)),
+        stage && (await toWalkerResult(stage)),
+      ],
+    })
+
+    // core.autocrlf is false \r\n should not be replaced with \n
+    expectedMatrix[1][1] = {
+      type: 'blob',
+      mode: 0o100644,
+      content: 'Hello\r\nagain',
+      oid: '8d4f7af538be6af26291dc33eb1fde39b558dbea',
+      hasStat: true,
+    }
+    expect(matrix).toEqual(expectedMatrix)
+  })
+
+  it('symlink content returns target path, not target file content', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+
+    // BrowserFS has a design quirk where HTTPRequestFS has a default mode of 555 for everything,
+    // meaning that files have the executable bit set by default!
+    const isBrowserFS = !!fs._original_unwrapped_fs.getRootFS
+    const SYMLINKMODE = isBrowserFS ? 0o100755 : 0o120000
+
+    await fs._symlink('a.txt', `${dir}/link-to-a.txt`)
+
+    const result = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR()],
+      map: async (filepath, [workdir]) => {
+        if (filepath === 'link-to-a.txt' && workdir) {
+          return {
+            type: await workdir.type(),
+            mode: await workdir.mode(),
+            content: Buffer.from(await workdir.content()).toString('utf8'),
+          }
+        }
+      },
+    })
+
+    const entry = result.find(Boolean)
+    expect(entry).toBeDefined()
+    expect(entry.type).toBe('blob')
+    expect(entry.mode).toBe(SYMLINKMODE)
+    expect(entry.content).toBe('a.txt')
+  })
+
+  it('symlink oid works for non-existent targets', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+
+    // BrowserFS has a design quirk where HTTPRequestFS has a default mode of 555 for everything,
+    // meaning that files have the executable bit set by default!
+    const isBrowserFS = !!fs._original_unwrapped_fs.getRootFS
+    const SYMLINKMODE = isBrowserFS ? 0o100755 : 0o120000
+
+    await fs._symlink('non-existent-file.txt', `${dir}/broken-link.txt`)
+
+    const result = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR()],
+      map: async (filepath, [workdir]) => {
+        if (filepath === 'broken-link.txt' && workdir) {
+          return {
+            type: await workdir.type(),
+            mode: await workdir.mode(),
+            content: Buffer.from(await workdir.content()).toString('utf8'),
+            oid: await workdir.oid(),
+          }
+        }
+      },
+    })
+
+    const entry = result.find(Boolean)
+    expect(entry).toBeDefined()
+    expect(entry.type).toBe('blob')
+    expect(entry.mode).toBe(SYMLINKMODE)
+    expect(entry.content).toBe('non-existent-file.txt')
+    expect(entry.oid).toBeDefined()
+  })
+
+  it('symlink content matches what git stores (target path, not dereferenced content)', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+
+    // Create and commit a symlink so it exists in TREE
+    await fs._symlink('a.txt', `${dir}/link-to-a.txt`)
+    await add({ fs, dir, gitdir, filepath: 'link-to-a.txt' })
+    await commit({
+      fs,
+      dir,
+      gitdir,
+      message: 'add symlink',
+      author: { name: 'test', email: 'test@test.com' },
+    })
+
+    // Git stores symlinks as blobs containing the target PATH, not the target's content.
+    // This matches `git cat-file blob <symlink-oid>` behavior.
+    const result = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR(), TREE({ ref: 'HEAD' })],
+      map: async (filepath, [workdir, tree]) => {
+        if (filepath === 'link-to-a.txt' && workdir && tree) {
+          return {
+            filepath,
+            workdir: {
+              oid: await workdir.oid(),
+              content: Buffer.from(await workdir.content()).toString('utf8'),
+            },
+            tree: {
+              oid: await tree.oid(),
+              content: Buffer.from(await tree.content()).toString('utf8'),
+            },
+          }
+        }
+      },
+    })
+
+    const entry = result.find(Boolean)
+    expect(entry).toBeDefined()
+    expect(entry.workdir.oid).toBe(entry.tree.oid)
+    expect(entry.workdir.content).toBe(entry.tree.content)
+    expect(entry.tree.content).toBe('a.txt')
+
+    const computedOid = (
+      await hashBlob({
+        object: entry.workdir.content,
+      })
+    ).oid
+    expect(computedOid).toBe(entry.workdir.oid)
+  })
+
+  it('throws when TREE is given a ref that does not exist', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+    // Test
+    let error = null
+    try {
+      await walk({
+        fs,
+        dir,
+        gitdir,
+        trees: [TREE({ ref: 'refs/heads/does-not-exist' })],
+        map: async filepath => filepath,
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error instanceof Errors.NotFoundError).toBe(true)
+  })
+
+  it('throws when TREE is given a ref with a trailing newline', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+    // Test
+    let error = null
+    try {
+      await walk({
+        fs,
+        dir,
+        gitdir,
+        trees: [TREE({ ref: 'master\n' })],
+        map: async filepath => filepath,
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error instanceof Errors.NotFoundError).toBe(true)
+  })
+
+  it('walks an empty tree on a branch that has no commits yet', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-empty')
+    await init({ fs, dir, gitdir, defaultBranch: 'main' })
+    // Test
+    const result = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [TREE({ ref: 'HEAD' })],
+      map: async filepath => (filepath === '.' ? undefined : filepath),
+    })
+    expect(result).toEqual([])
+  })
+
+  it('throws when HEAD points to a missing non-branch ref', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-empty')
+    await init({ fs, dir, gitdir, defaultBranch: 'main' })
+    await writeRef({
+      fs,
+      dir,
+      gitdir,
+      ref: 'HEAD',
+      value: 'refs/tags/missing',
+      force: true,
+      symbolic: true,
+    })
+    // Test
+    let error = null
+    try {
+      await walk({
+        fs,
+        dir,
+        gitdir,
+        trees: [TREE({ ref: 'HEAD' })],
+        map: async filepath => filepath,
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error instanceof Errors.NotFoundError).toBe(true)
+  })
+
+  it('writes a stat refresh asked for after the walk has finished', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+    // A tracked, unmodified file with blank stat info in the index
+    await fs.write(`${dir}/e.txt`, 'e')
+    const { oid } = await hashBlob({ object: 'e' })
+    await updateIndex({ fs, dir, gitdir, filepath: 'e.txt', oid, add: true })
+    // Count the writes to the index file
+    let indexWrites = 0
+    const write = fs.write.bind(fs)
+    fs.write = (filepath, ...args) => {
+      if (filepath === `${gitdir}/index`) indexWrites++
+      return write(filepath, ...args)
+    }
+    // Test
+    const [entry] = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR()],
+      map: async (filepath, [workdir]) =>
+        filepath === 'e.txt' ? workdir : undefined,
+    })
+    // Nothing asked for the oid during the walk, so there was nothing to write
+    expect(indexWrites).toBe(0)
+    // The walk is over, so this refresh is written right away
+    expect(await entry.oid()).toBe(oid)
+    expect(indexWrites).toBe(1)
+    // The stat info is up to date now, so the next walk has nothing to write
+    await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR()],
+      map: async (filepath, [workdir]) =>
+        filepath === 'e.txt' ? workdir.oid() : undefined,
+    })
+    expect(indexWrites).toBe(1)
+  })
+
+  it('does not refresh an entry that changed during the walk', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-walk')
+    // A tracked, unmodified file with blank stat info in the index
+    await fs.write(`${dir}/e.txt`, 'e')
+    const { oid } = await hashBlob({ object: 'e' })
+    await updateIndex({ fs, dir, gitdir, filepath: 'e.txt', oid, add: true })
+    // Test
+    await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [WORKDIR()],
+      map: async (filepath, [workdir]) => {
+        if (filepath !== 'e.txt') return
+        // Queue a refresh for the old content, then stage new content
+        // before the walk ends and the queue is written.
+        await workdir.oid()
+        await fs.write(`${dir}/e.txt`, 'changed')
+        await add({ fs, dir, gitdir, filepath: 'e.txt' })
+      },
+    })
+    // The queued refresh must not overwrite the newer entry
+    const { oid: changed } = await hashBlob({ object: 'changed' })
+    const [staged] = await walk({
+      fs,
+      dir,
+      gitdir,
+      trees: [STAGE()],
+      map: async (filepath, [stage]) =>
+        filepath === 'e.txt' ? stage.oid() : undefined,
+    })
+    expect(staged).toBe(changed)
   })
 })

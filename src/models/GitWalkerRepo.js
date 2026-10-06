@@ -3,7 +3,7 @@ import { ObjectTypeError } from '../errors/ObjectTypeError.js'
 import { GitRefManager } from '../managers/GitRefManager.js'
 import { GitTree } from '../models/GitTree.js'
 import { _readObject as readObject } from '../storage/readObject.js'
-import { join } from '../utils/join'
+import { join } from '../utils/join.js'
 import { normalizeMode } from '../utils/normalizeMode.js'
 import { resolveTree } from '../utils/resolveTree.js'
 
@@ -18,9 +18,16 @@ export class GitWalkerRepo {
       try {
         oid = await GitRefManager.resolve({ fs, gitdir, ref })
       } catch (e) {
-        if (e instanceof NotFoundError) {
-          // Handle fresh branches with no commits
+        // Only a branch that has no commits yet gets the empty tree. Anything
+        // else that fails to resolve is a ref the caller got wrong, and
+        // swallowing it here would walk an empty tree instead of saying so.
+        if (
+          e instanceof NotFoundError &&
+          (await GitRefManager.isUnbornBranch({ fs, gitdir, ref }))
+        ) {
           oid = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+        } else {
+          throw e
         }
       }
       const tree = await resolveTree({ fs, cache: this.cache, gitdir, oid })

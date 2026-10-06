@@ -1,7 +1,21 @@
 /* eslint-env node, browser, jasmine */
-const { Errors, readCommit, commit, log } = require('isomorphic-git')
+import * as path from 'path'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import {
+  Errors,
+  readCommit,
+  commit,
+  log,
+  resolveRef,
+  init,
+  add,
+  writeBlob,
+  writeTree,
+  annotatedTag,
+  writeTag,
+} from 'isomorphic-git'
+
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('commit', () => {
   it('prevent commit if index has unmerged paths', async () => {
@@ -32,26 +46,193 @@ describe('commit', () => {
     const { fs, gitdir } = await makeFixture('test-commit')
     const { oid: originalOid } = (await log({ fs, gitdir, depth: 1 }))[0]
     // Test
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
     const sha = await commit({
       fs,
       gitdir,
-      author: {
-        name: 'Mr. Test',
-        email: 'mrtest@example.com',
-        timestamp: 1262356920,
-        timezoneOffset: -0,
-      },
+      author,
       message: 'Initial commit',
     })
     expect(sha).toBe('7a51c0b1181d738198ff21c4679d3aa32eb52fe0')
     // updates branch pointer
-    const {
-      oid: currentOid,
-      commit: { parent },
-    } = (await log({ fs, gitdir, depth: 1 }))[0]
-    expect(parent).toEqual([originalOid])
+    const { oid: currentOid, commit: currentCommit } = (
+      await log({ fs, gitdir, depth: 1 })
+    )[0]
+    expect(currentCommit.parent).toEqual([originalOid])
+    expect(currentCommit.author).toEqual(author)
+    expect(currentCommit.committer).toEqual(author)
+    expect(currentCommit.message).toEqual('Initial commit\n')
     expect(currentOid).not.toEqual(originalOid)
     expect(currentOid).toEqual(sha)
+  })
+
+  it('Initial commit', async () => {
+    // Setup
+    const { fs, dir } = await makeFixture('test-init')
+    await init({ fs, dir })
+    await fs.write(path.join(dir, 'hello.md'), 'Hello, World!')
+    await add({ fs, dir, filepath: 'hello.md' })
+
+    // Test
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
+
+    await commit({
+      fs,
+      dir,
+      author,
+      message: 'Initial commit',
+      disallowEmpty: true,
+    })
+
+    const commits = await log({ fs, dir })
+    expect(commits.length).toBe(1)
+    expect(commits[0].commit.parent).toEqual([])
+    expect(await resolveRef({ fs, dir, ref: 'HEAD' })).toEqual(commits[0].oid)
+  })
+
+  it('disallows an empty initial commit when disallowEmpty is true', async () => {
+    const { fs, dir } = await makeFixture('test-init')
+    await init({ fs, dir })
+
+    let error = null
+    try {
+      await commit({
+        fs,
+        dir,
+        author: {
+          name: 'Mr. Test',
+          email: 'mrtest@example.com',
+        },
+        message: 'Empty initial commit',
+        disallowEmpty: true,
+      })
+    } catch (err) {
+      error = err
+    }
+
+    expect(error).toBeInstanceOf(Errors.EmptyCommitError)
+  })
+
+  it('disallows an explicitly empty initial tree when disallowEmpty is true', async () => {
+    const { fs, dir } = await makeFixture('test-init')
+    await init({ fs, dir })
+
+    let error = null
+    try {
+      await commit({
+        fs,
+        dir,
+        author: {
+          name: 'Mr. Test',
+          email: 'mrtest@example.com',
+        },
+        message: 'Empty initial commit',
+        tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+        disallowEmpty: true,
+      })
+    } catch (err) {
+      error = err
+    }
+
+    expect(error).toBeInstanceOf(Errors.EmptyCommitError)
+  })
+
+  it('allows an explicitly non-empty initial tree when disallowEmpty is true', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-init')
+    await init({ fs, dir })
+    const blob = await writeBlob({
+      fs,
+      gitdir,
+      blob: Buffer.from('hello', 'utf8'),
+    })
+    const tree = await writeTree({
+      fs,
+      gitdir,
+      tree: [{ mode: '100644', path: 'hello.txt', oid: blob, type: 'blob' }],
+    })
+
+    await commit({
+      fs,
+      dir,
+      author: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+      },
+      message: 'Initial commit',
+      tree,
+      disallowEmpty: true,
+    })
+
+    const [commitEntry] = await log({ fs, dir })
+    expect(commitEntry.commit.tree).toBe(tree)
+  })
+
+  it('disallows an unchanged commit when disallowEmpty is true', async () => {
+    const { fs, gitdir } = await makeFixture('test-commit')
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+    }
+    await commit({
+      fs,
+      gitdir,
+      author,
+      message: 'Baseline commit',
+    })
+    const oid = await resolveRef({ fs, gitdir, ref: 'HEAD' })
+
+    let error = null
+    try {
+      await commit({
+        fs,
+        gitdir,
+        author,
+        message: 'Empty commit',
+        disallowEmpty: true,
+      })
+    } catch (err) {
+      error = err
+    }
+
+    expect(error).toBeInstanceOf(Errors.EmptyCommitError)
+    expect(await resolveRef({ fs, gitdir, ref: 'HEAD' })).toBe(oid)
+  })
+
+  it('Cannot commit without message', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-commit')
+    // Test
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
+
+    let error = null
+
+    try {
+      await commit({
+        fs,
+        gitdir,
+        author,
+      })
+    } catch (err) {
+      error = err
+    }
+
+    expect(error).not.toBeNull()
+    expect(error instanceof Errors.MissingParameterError).toBe(true)
   })
 
   it('without updating branch', async () => {
@@ -186,6 +367,115 @@ describe('commit', () => {
     expect(_tree).toEqual(tree)
   })
 
+  it('custom parent given as an annotated tag', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-commit')
+    const { oid: originalOid } = (await log({ fs, gitdir, depth: 1 }))[0]
+    await annotatedTag({
+      fs,
+      gitdir,
+      ref: 'parent-tag',
+      object: originalOid,
+      message: 'annotated tag',
+      tagger: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+    })
+    // Test
+    const sha = await commit({
+      fs,
+      gitdir,
+      parent: ['parent-tag'],
+      author: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+      message: 'Commit on top of a tag',
+    })
+    // the parent should be the commit, not the tag object
+    const { commit: c } = await readCommit({ fs, gitdir, oid: sha })
+    expect(c.parent).toEqual([originalOid])
+  })
+
+  it('custom parent given as an annotated tag oid', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-commit')
+    const { oid: originalOid } = (await log({ fs, gitdir, depth: 1 }))[0]
+    await annotatedTag({
+      fs,
+      gitdir,
+      ref: 'parent-tag',
+      object: originalOid,
+      message: 'annotated tag',
+      tagger: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+    })
+    const tagOid = await resolveRef({ fs, gitdir, ref: 'parent-tag' })
+    // Test
+    const sha = await commit({
+      fs,
+      gitdir,
+      parent: [tagOid],
+      author: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+      message: 'Commit on top of a tag',
+    })
+    // the parent should be the commit, not the tag object
+    const { commit: c } = await readCommit({ fs, gitdir, oid: sha })
+    expect(c.parent).toEqual([originalOid])
+  })
+
+  it('custom parent given as an annotated tag of a missing commit', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-commit')
+    const missingOid = '1111111111111111111111111111111111111111'
+    const tagOid = await writeTag({
+      fs,
+      gitdir,
+      tag: {
+        object: missingOid,
+        type: 'commit',
+        tag: 'missing-tag',
+        tagger: {
+          name: 'Mr. Test',
+          email: 'mrtest@example.com',
+          timestamp: 1262356920,
+          timezoneOffset: -0,
+        },
+        message: 'annotated tag of a missing commit',
+      },
+    })
+    // Test
+    const sha = await commit({
+      fs,
+      gitdir,
+      parent: [tagOid],
+      author: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+      message: 'Commit on top of a tag of a missing commit',
+    })
+    // the parent should be the missing commit, not the tag object
+    const { commit: c } = await readCommit({ fs, gitdir, oid: sha })
+    expect(c.parent).toEqual([missingOid])
+  })
+
   it('throw error if missing author', async () => {
     // Setup
     const { fs, gitdir } = await makeFixture('test-commit')
@@ -211,10 +501,10 @@ describe('commit', () => {
 
   it('create signed commit', async () => {
     // Setup
-    const { pgp } = require('@isomorphic-git/pgp-plugin')
+    const { pgp } = await import('@isomorphic-git/pgp-plugin')
     const { fs, gitdir } = await makeFixture('test-commit')
     // Test
-    const { privateKey, publicKey } = require('./__fixtures__/pgp-keys.js')
+    const { privateKey, publicKey } = await import('./__fixtures__/pgp-keys.js')
     const oid = await commit({
       fs,
       gitdir,
@@ -304,5 +594,152 @@ describe('commit', () => {
     expect(
       Object.is(commits[0].commit.author.timezoneOffset, -240)
     ).toBeTruthy()
+  })
+
+  it('commit amend (new message)', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-commit')
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
+    await commit({
+      fs,
+      gitdir,
+      author,
+      message: 'Initial commit',
+    })
+
+    // Test
+    const { oid: originalOid, commit: originalCommit } = (
+      await log({ fs, gitdir, depth: 1 })
+    )[0]
+    await commit({
+      fs,
+      gitdir,
+      message: 'Amended commit',
+      amend: true,
+    })
+    const { oid: amendedOid, commit: amendedCommit } = (
+      await log({ fs, gitdir, depth: 1 })
+    )[0]
+
+    expect(amendedOid).not.toEqual(originalOid)
+    expect(amendedCommit.author).toEqual(originalCommit.author)
+    expect(amendedCommit.committer).toEqual(originalCommit.committer)
+    expect(amendedCommit.message).toEqual('Amended commit\n')
+    expect(amendedCommit.parent).toEqual(originalCommit.parent)
+    expect(await resolveRef({ fs, gitdir, ref: 'HEAD' })).toEqual(amendedOid)
+  })
+
+  it('commit amend (change author, keep message)', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-commit')
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
+    await commit({
+      fs,
+      gitdir,
+      author,
+      message: 'Initial commit',
+    })
+
+    // Test
+    const { oid: originalOid, commit: originalCommit } = (
+      await log({ fs, gitdir, depth: 1 })
+    )[0]
+
+    const newAuthor = {
+      name: 'Mr. Test 2',
+      email: 'mrtest2@example.com',
+      timestamp: 1262356921,
+      timezoneOffset: -0,
+    }
+    await commit({
+      fs,
+      gitdir,
+      author: newAuthor,
+      amend: true,
+    })
+    const { oid: amendedOid, commit: amendedCommit } = (
+      await log({ fs, gitdir, depth: 1 })
+    )[0]
+
+    expect(amendedOid).not.toEqual(originalOid)
+    expect(amendedCommit.author).toEqual(newAuthor)
+    expect(amendedCommit.committer).toEqual(newAuthor)
+    expect(amendedCommit.message).toEqual(originalCommit.message)
+    expect(amendedCommit.parent).toEqual(originalCommit.parent)
+    expect(await resolveRef({ fs, gitdir, ref: 'HEAD' })).toEqual(amendedOid)
+  })
+
+  it('Cannot amend without an initial commit', async () => {
+    // Setup
+    const { fs, dir } = await makeFixture('test-init')
+    await init({ fs, dir })
+    await fs.write(path.join(dir, 'hello.md'), 'Hello, World!')
+    await add({ fs, dir, filepath: 'hello.md' })
+
+    // Test
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
+
+    let error = null
+    try {
+      await commit({
+        fs,
+        dir,
+        author,
+        message: 'Initial commit',
+        amend: true,
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error instanceof Errors.NoCommitError).toBe(true)
+  })
+
+  it('updates HEAD in detached HEAD state', async () => {
+    const { fs, gitdir } = await makeFixture('test-detachedHead')
+
+    // Verify we're in detached HEAD state
+    const headBefore = await fs.read(`${gitdir}/HEAD`, { encoding: 'utf8' })
+    expect(headBefore.trim()).toBe('d4ddffa3db6f52466e09076e70fbefa0641b4cea')
+
+    const originalOid = await resolveRef({ fs, gitdir, ref: 'HEAD' })
+
+    const author = {
+      name: 'Mr. Test',
+      email: 'mrtest@example.com',
+      timestamp: 1262356920,
+      timezoneOffset: -0,
+    }
+    const sha = await commit({
+      fs,
+      gitdir,
+      author,
+      message: 'Commit in detached HEAD',
+    })
+
+    // HEAD should be updated to the new commit
+    const newOid = await resolveRef({ fs, gitdir, ref: 'HEAD' })
+    expect(newOid).toBe(sha)
+    expect(newOid).not.toBe(originalOid)
+
+    // Verify via log that we have the right parent
+    const commits = await log({ fs, gitdir, depth: 1 })
+    expect(commits[0].oid).toBe(sha)
+    expect(commits[0].commit.parent).toEqual([originalOid])
   })
 })

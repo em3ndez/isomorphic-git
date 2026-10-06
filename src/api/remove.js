@@ -4,6 +4,7 @@ import '../typedefs.js'
 import { GitIndexManager } from '../managers/GitIndexManager.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 
 /**
@@ -15,13 +16,18 @@ import { join } from '../utils/join.js'
  * @param {FsClient} args.fs - a file system client
  * @param {string} [args.dir] - The [working tree](dir-vs-gitdir.md) directory path
  * @param {string} [args.gitdir=join(dir, '.git')] - [required] The [git directory](dir-vs-gitdir.md) path
- * @param {string} args.filepath - The path to the file to remove from the index
+ * @param {string|string[]} args.filepath - The path to the file to remove from the index, or an array of paths
  * @param {object} [args.cache] - a [cache](cache.md) object
  *
  * @returns {Promise<void>} Resolves successfully once the git index has been updated
  *
  * @example
  * await git.remove({ fs, dir: '/tutorial', filepath: 'README.md' })
+ * console.log('done')
+ *
+ * @example
+ * // remove several files from the index with a single write of the index
+ * await git.remove({ fs, dir: '/tutorial', filepath: ['README.md', 'docs/old.md'] })
  * console.log('done')
  *
  */
@@ -37,10 +43,15 @@ export async function remove({
     assertParameter('gitdir', gitdir)
     assertParameter('filepath', filepath)
 
+    const fsp = new FileSystem(_fs)
+    const updatedGitdir = await discoverGitdir({ fsp, dotgit: gitdir })
     await GitIndexManager.acquire(
-      { fs: new FileSystem(_fs), gitdir, cache },
-      async function(index) {
-        index.delete({ filepath })
+      { fs: fsp, gitdir: updatedGitdir, cache },
+      async function (index) {
+        const filepaths = Array.isArray(filepath) ? filepath : [filepath]
+        for (const currentFilepath of filepaths) {
+          index.delete({ filepath: currentFilepath })
+        }
       }
     )
   } catch (err) {

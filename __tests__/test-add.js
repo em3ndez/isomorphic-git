@@ -1,14 +1,16 @@
 /* eslint-env node, browser, jasmine */
-const {
+import {
   init,
   add,
   listFiles,
   readBlob,
   walk,
   STAGE,
-} = require('isomorphic-git')
+  status,
+  getConfig,
+} from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 // NOTE: we cannot actually commit a real .gitignore file in fixtures or fixtures won't be included in this repo
 const writeGitIgnore = async (fs, dir) =>
@@ -172,6 +174,59 @@ describe('add', () => {
     await add({ fs, dir, filepath: 'i.txt', force: true })
     expect((await listFiles({ fs, dir })).length).toEqual(1)
   })
+  it('ignored file that is already tracked', async () => {
+    // Setup
+    const { fs, dir } = await makeFixture('test-add')
+    await init({ fs, dir })
+    // Track the file before it becomes ignored. That is how a file ends up
+    // tracked and ignored at the same time in a real repository.
+    await add({ fs, dir, filepath: 'i.txt' })
+    await writeGitIgnore(fs, dir)
+    await fs.write(dir + '/i.txt', 'changed after being ignored')
+    // Test
+    await add({ fs, dir, filepath: 'i.txt' })
+    // .gitignore applies to untracked files only, so canonical git stages this
+    // change instead of silently doing nothing.
+    const staged = await walk({
+      fs,
+      dir,
+      trees: [STAGE()],
+      map: async (filepath, [stage]) =>
+        filepath === 'i.txt' && stage ? stage.oid() : undefined,
+    })
+    const { blob } = await readBlob({ fs, dir, oid: staged[0] })
+    expect(Buffer.from(blob).toString('utf8')).toEqual(
+      'changed after being ignored'
+    )
+  })
+  it('tracked file inside an ignored folder', async () => {
+    // Setup
+    const { fs, dir } = await makeFixture('test-add')
+    await init({ fs, dir })
+    // Track one file inside the folder before the folder becomes ignored.
+    await add({ fs, dir, filepath: 'js_modules/awesome/index.js' })
+    await writeGitIgnore(fs, dir)
+    await fs.write(dir + '/js_modules/awesome/index.js', 'changed')
+    await fs.write(dir + '/js_modules/untracked.js', 'never staged')
+    // Test
+    await add({ fs, dir, filepath: '.' })
+    // Canonical git recurses into an ignored folder for the sake of the paths
+    // it already tracks, and stages those while leaving the rest alone.
+    const staged = await walk({
+      fs,
+      dir,
+      trees: [STAGE()],
+      map: async (filepath, [stage]) =>
+        filepath === 'js_modules/awesome/index.js' && stage
+          ? stage.oid()
+          : undefined,
+    })
+    const { blob } = await readBlob({ fs, dir, oid: staged[0] })
+    expect(Buffer.from(blob).toString('utf8')).toEqual('changed')
+    expect(await listFiles({ fs, dir })).not.toContain(
+      'js_modules/untracked.js'
+    )
+  })
   it('non-existant file', async () => {
     // Setup
     const { fs, dir } = await makeFixture('test-add')
@@ -233,5 +288,41 @@ describe('add', () => {
     expect((await listFiles({ fs, dir })).length).toEqual(0)
     await add({ fs, dir, filepath: '.', parallel: false })
     expect((await listFiles({ fs, dir })).length).toEqual(7)
+  })
+  it('git add . with core.autocrlf=true does not break binary files', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-add-autocrlf')
+    expect(await getConfig({ fs, dir, gitdir, path: 'core.autocrlf' })).toEqual(
+      'true'
+    )
+    const files = await fs.readdir(dir)
+    expect(files.sort()).toMatchInlineSnapshot(`
+      [
+        "20thcenturyfoodcourt.png",
+        "Test.md",
+      ]
+    `)
+    const index = await listFiles({ fs, dir, gitdir })
+    expect(index).toMatchInlineSnapshot(`
+      [
+        "20thcenturyfoodcourt.png",
+        "Test.md",
+      ]
+    `)
+    expect(new TextDecoder().decode(await fs.read(`${dir}/Test.md`))).toContain(
+      `\r\n`
+    )
+    await fs.write(`${dir}/README.md`, '# test')
+
+    await add({ fs, dir, gitdir, filepath: '.' })
+
+    expect(
+      await status({ fs, dir, gitdir, filepath: '20thcenturyfoodcourt.png' })
+    ).toEqual('unmodified')
+    expect(await status({ fs, dir, gitdir, filepath: 'Test.md' })).toEqual(
+      'unmodified'
+    )
+    expect(await status({ fs, dir, gitdir, filepath: 'README.md' })).toEqual(
+      'added'
+    )
   })
 })

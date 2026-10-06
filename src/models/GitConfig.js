@@ -1,5 +1,9 @@
 // This is straight from parse_unit_factor in config.c of canonical git
 const num = val => {
+  if (typeof val === 'number') {
+    return val
+  }
+
   val = val.toLowerCase()
   let n = parseInt(val)
   if (val.endsWith('k')) n *= 1024
@@ -10,6 +14,10 @@ const num = val => {
 
 // This is straight from git_parse_maybe_bool_text in config.c of canonical git
 const bool = val => {
+  if (typeof val === 'boolean') {
+    return val
+  }
+
   val = val.trim().toLowerCase()
   if (val === 'true' || val === 'yes' || val === 'on') return true
   if (val === 'false' || val === 'no' || val === 'off') return false
@@ -34,7 +42,7 @@ const schema = {
 // section starts with [ and ends with ]
 // section is alphanumeric (ASCII) with - and .
 // section is case insensitive
-// subsection is optionnal
+// subsection is optional
 // subsection is specified after section and one or more spaces
 // subsection is specified between double quotes
 const SECTION_LINE_REGEX = /^\[([A-Za-z0-9-.]+)(?: "(.*)")?\]$/
@@ -48,6 +56,7 @@ const SECTION_REGEX = /^[A-Za-z0-9-.]+$/
 const VARIABLE_LINE_REGEX = /^([A-Za-z][A-Za-z-]*)(?: *= *(.*))?$/
 const VARIABLE_NAME_REGEX = /^[A-Za-z][A-Za-z-]*$/
 
+// Comments start with either # or ; and extend to the end of line
 const VARIABLE_VALUE_COMMENT_REGEX = /^(.*?)( *[#;].*)$/
 
 const extractSectionLine = line => {
@@ -124,6 +133,7 @@ const normalizePath = path => {
     name,
     path: getPath(section, subsection, name),
     sectionPath: getPath(section, subsection, null),
+    isSection: !!section,
   }
 }
 
@@ -139,26 +149,28 @@ export class GitConfig {
   constructor(text) {
     let section = null
     let subsection = null
-    this.parsedConfig = text.split('\n').map(line => {
-      let name = null
-      let value = null
+    this.parsedConfig = text
+      ? text.split('\n').map(line => {
+          let name = null
+          let value = null
 
-      const trimmedLine = line.trim()
-      const extractedSection = extractSectionLine(trimmedLine)
-      const isSection = extractedSection != null
-      if (isSection) {
-        ;[section, subsection] = extractedSection
-      } else {
-        const extractedVariable = extractVariableLine(trimmedLine)
-        const isVariable = extractedVariable != null
-        if (isVariable) {
-          ;[name, value] = extractedVariable
-        }
-      }
+          const trimmedLine = line.trim()
+          const extractedSection = extractSectionLine(trimmedLine)
+          const isSection = extractedSection != null
+          if (isSection) {
+            ;[section, subsection] = extractedSection
+          } else {
+            const extractedVariable = extractVariableLine(trimmedLine)
+            const isVariable = extractedVariable != null
+            if (isVariable) {
+              ;[name, value] = extractedVariable
+            }
+          }
 
-      const path = getPath(section, subsection, name)
-      return { line, isSection, section, subsection, name, value, path }
-    })
+          const path = getPath(section, subsection, name)
+          return { line, isSection, section, subsection, name, value, path }
+        })
+      : []
   }
 
   static from(text) {
@@ -182,7 +194,7 @@ export class GitConfig {
 
   async getSubsections(section) {
     return this.parsedConfig
-      .filter(config => config.section === section && config.isSection)
+      .filter(config => config.isSection && config.section === section)
       .map(config => config.subsection)
   }
 
@@ -204,7 +216,9 @@ export class GitConfig {
       name,
       path: normalizedPath,
       sectionPath,
+      isSection,
     } = normalizePath(path)
+
     const configIndex = findLastIndex(
       this.parsedConfig,
       config => config.path === normalizedPath
@@ -246,6 +260,7 @@ export class GitConfig {
           } else {
             // Add a new section
             const newSection = {
+              isSection,
               section,
               subsection,
               modified: true,

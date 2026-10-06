@@ -1,9 +1,15 @@
 /* eslint-env node, browser, jasmine */
-const path = require('path')
+import * as path from 'path'
 
-const { statusMatrix, add, remove } = require('isomorphic-git')
+import {
+  statusMatrix,
+  add,
+  remove,
+  hashBlob,
+  updateIndex,
+} from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('statusMatrix', () => {
   it('statusMatrix', async () => {
@@ -295,6 +301,39 @@ describe('statusMatrix', () => {
     ])
   })
 
+  it('statusMatrix with filepaths stops at a path component boundary', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-statusMatrix-filepath')
+    // Siblings whose names start with the requested path, but which are
+    // neither the path itself nor anything under it.
+    await fs.write(path.join(dir, 'index.js'), 'sibling file')
+    await fs.mkdir(path.join(dir, 'i2'))
+    await fs.write(path.join(dir, 'i2', 'i2.txt'), 'sibling directory')
+
+    // Test
+    const matrix = await statusMatrix({ fs, dir, gitdir, filepaths: ['i'] })
+    expect(matrix).toEqual([
+      ['i/.gitignore', 0, 2, 0],
+      ['i/i.txt', 0, 2, 0],
+    ])
+  })
+
+  it('statusMatrix with a trailing slash on the filepath', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-statusMatrix-filepath')
+
+    // Test
+    expect(await statusMatrix({ fs, dir, gitdir, filepaths: ['i/'] })).toEqual([
+      ['i/.gitignore', 0, 2, 0],
+      ['i/i.txt', 0, 2, 0],
+    ])
+
+    // './' names the repository root, the same as '.'
+    expect(await statusMatrix({ fs, dir, gitdir, filepaths: ['./'] })).toEqual(
+      await statusMatrix({ fs, dir, gitdir, filepaths: ['.'] })
+    )
+  })
+
   it('statusMatrix with filter', async () => {
     // Setup
     const { fs, dir, gitdir } = await makeFixture('test-statusMatrix-filepath')
@@ -393,5 +432,60 @@ describe('statusMatrix', () => {
       ['b', 1, 0, 0],
       ['b/b.txt', 0, 2, 2],
     ])
+  })
+
+  it('does not modify .git/index when refresh is false', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-statusMatrix')
+    // Take an unmodified tracked file and bump its workdir mtime without
+    // changing contents, so the racy stat-cache refresh would normally fire.
+    const original = await fs.read(path.join(dir, 'a.txt'))
+    await fs.write(path.join(dir, 'a.txt'), original)
+    // Snapshot the index file
+    const indexBefore = await fs.read(path.join(gitdir, 'index'))
+    // Read-only statusMatrix call
+    const matrix = await statusMatrix({
+      fs,
+      dir,
+      gitdir,
+      filepaths: ['a.txt'],
+      refresh: false,
+    })
+    expect(matrix).toEqual([['a.txt', 1, 1, 1]])
+    const indexAfter = await fs.read(path.join(gitdir, 'index'))
+    expect(indexAfter).toEqual(indexBefore)
+  })
+
+  it('writes .git/index once when refreshing the stat info of many files', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-statusMatrix')
+    // Stage some files with blank stat info in the index, so the stat-cache
+    // refresh fires for each of them. Anything that touches tracked files
+    // without changing them (`touch`, copying the working tree) does the same.
+    const filepaths = ['e.txt', 'f.txt', 'g.txt']
+    for (const filepath of filepaths) {
+      await fs.write(path.join(dir, filepath), filepath)
+      const { oid } = await hashBlob({ object: filepath })
+      await updateIndex({ fs, dir, gitdir, filepath, oid, add: true })
+    }
+    // Count the writes to the index file
+    let indexWrites = 0
+    const write = fs.write.bind(fs)
+    fs.write = (filepath, ...args) => {
+      if (filepath === `${gitdir}/index`) indexWrites++
+      return write(filepath, ...args)
+    }
+    // Test
+    const matrix = await statusMatrix({ fs, dir, gitdir, filepaths })
+    expect(matrix).toEqual([
+      ['e.txt', 0, 2, 2],
+      ['f.txt', 0, 2, 2],
+      ['g.txt', 0, 2, 2],
+    ])
+    // One write for the whole walk, not one per file
+    expect(indexWrites).toBe(1)
+    // The stat info is up to date now, so the next walk has nothing to write
+    await statusMatrix({ fs, dir, gitdir, filepaths })
+    expect(indexWrites).toBe(1)
   })
 })

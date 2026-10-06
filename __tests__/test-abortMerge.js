@@ -1,5 +1,5 @@
 /* eslint-env node, browser, jasmine */
-const {
+import {
   Errors,
   merge,
   readBlob,
@@ -10,10 +10,10 @@ const {
   TREE,
   WORKDIR,
   walk,
-} = require('isomorphic-git')
-const { GitIndexManager, modified } = require('isomorphic-git/internal-apis')
+} from 'isomorphic-git'
+import { GitIndexManager, modified } from 'isomorphic-git/internal-apis'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('abortMerge', () => {
   it('write conflicted files to index at different stages', async () => {
@@ -59,53 +59,54 @@ describe('abortMerge', () => {
     expect(error).not.toBeNull()
     expect(error.code).toBe(Errors.MergeConflictError.code)
 
-    await GitIndexManager.acquire({ fs, gitdir, cache: {} }, async function(
-      index
-    ) {
-      expect(index.unmergedPaths.length).toEqual(2)
-      expect(index.entriesFlat.length).toBe(7)
-      expect(index.unmergedPaths).toContain('a')
-      expect(index.unmergedPaths).toContain('b')
-      expect(index.entriesMap.get('a').stages.length).toBe(4)
-      expect(index.entriesMap.get('b').stages.length).toBe(4)
-      expect(index.entriesMap.get('c').stages.length).toBe(1)
-      const fileAStages = [
-        await readBlob({
-          fs,
-          gitdir,
-          oid: index.entriesMap.get('a').stages[1].oid,
-        }),
-        await readBlob({
-          fs,
-          gitdir,
-          oid: index.entriesMap.get('a').stages[2].oid,
-        }),
-        await readBlob({
-          fs,
-          gitdir,
-          oid: index.entriesMap.get('a').stages[3].oid,
-        }),
-      ]
-      const fileBStages = [
-        await readBlob({
-          fs,
-          gitdir,
-          oid: index.entriesMap.get('b').stages[1].oid,
-        }),
-        await readBlob({
-          fs,
-          gitdir,
-          oid: index.entriesMap.get('b').stages[2].oid,
-        }),
-        await readBlob({
-          fs,
-          gitdir,
-          oid: index.entriesMap.get('b').stages[3].oid,
-        }),
-      ]
-      expect(fileAVersions).toEqual(fileAStages)
-      expect(fileBVersions).toEqual(fileBStages)
-    })
+    await GitIndexManager.acquire(
+      { fs, gitdir, cache: {} },
+      async function (index) {
+        expect(index.unmergedPaths.length).toEqual(2)
+        expect(index.entriesFlat.length).toBe(7)
+        expect(index.unmergedPaths).toContain('a')
+        expect(index.unmergedPaths).toContain('b')
+        expect(index.entriesMap.get('a').stages.length).toBe(4)
+        expect(index.entriesMap.get('b').stages.length).toBe(4)
+        expect(index.entriesMap.get('c').stages.length).toBe(1)
+        const fileAStages = [
+          await readBlob({
+            fs,
+            gitdir,
+            oid: index.entriesMap.get('a').stages[1].oid,
+          }),
+          await readBlob({
+            fs,
+            gitdir,
+            oid: index.entriesMap.get('a').stages[2].oid,
+          }),
+          await readBlob({
+            fs,
+            gitdir,
+            oid: index.entriesMap.get('a').stages[3].oid,
+          }),
+        ]
+        const fileBStages = [
+          await readBlob({
+            fs,
+            gitdir,
+            oid: index.entriesMap.get('b').stages[1].oid,
+          }),
+          await readBlob({
+            fs,
+            gitdir,
+            oid: index.entriesMap.get('b').stages[2].oid,
+          }),
+          await readBlob({
+            fs,
+            gitdir,
+            oid: index.entriesMap.get('b').stages[3].oid,
+          }),
+        ]
+        expect(fileAVersions).toEqual(fileAStages)
+        expect(fileBVersions).toEqual(fileBStages)
+      }
+    )
   })
 
   it('abort merge without touching anything', async () => {
@@ -144,7 +145,7 @@ describe('abortMerge', () => {
       dir,
       gitdir,
       trees,
-      map: async function(path, [head, workdir, index]) {
+      map: async function (path, [head, workdir, index]) {
         if (path === '.') return
 
         if (head && index) {
@@ -154,7 +155,7 @@ describe('abortMerge', () => {
 
         expect(await modified(index, head)).toBe(false)
 
-        // only since we didnt touch anything
+        // only since we didn't touch anything
         expect(await modified(workdir, head)).toBe(false)
 
         expect(await modified(index, workdir)).toBe(false)
@@ -173,8 +174,8 @@ describe('abortMerge', () => {
         fs,
         dir,
         gitdir,
-        ours: 'A',
-        theirs: 'B',
+        ours: 'c',
+        theirs: 'd',
         abortOnConflict: false,
         author: {
           name: 'Mr. Test',
@@ -195,15 +196,15 @@ describe('abortMerge', () => {
     await fs.write(`${dir}/b/b`, 'new text for file b')
     await fs.write(`${dir}/c/c`, 'new text for file c')
 
-    await abortMerge({ fs, dir, gitdir, commit: 'A' })
+    await abortMerge({ fs, dir, gitdir, commit: 'c' })
 
-    const trees = [TREE({ ref: 'A' }), WORKDIR(), STAGE()]
+    const trees = [TREE({ ref: 'c' }), WORKDIR(), STAGE()]
     await walk({
       fs,
       dir,
       gitdir,
       trees,
-      map: async function(path, [head, workdir, index]) {
+      map: async function (path, [head, workdir, index]) {
         if (head && (await head.type()) === 'tree') return
 
         if (path === 'b') {
@@ -265,7 +266,7 @@ describe('abortMerge', () => {
       dir,
       gitdir,
       trees,
-      map: async function(path, [head, workdir, index]) {
+      map: async function (path, [head, workdir, index]) {
         if (path === '.') return
 
         if (path === 'b') {
@@ -316,11 +317,12 @@ describe('abortMerge', () => {
     expect(error.code).toBe(Errors.MergeConflictError.code)
 
     fs.write(`${dir}/c`, 'new changes to file c')
-    await GitIndexManager.acquire({ fs, gitdir, cache: {} }, async function(
-      index
-    ) {
-      index.delete({ filepath: 'c' })
-    })
+    await GitIndexManager.acquire(
+      { fs, gitdir, cache: {} },
+      async function (index) {
+        index.delete({ filepath: 'c' })
+      }
+    )
 
     const fileAWorkdirVersion = await fs.read(`${dir}/a`).then(buffer => {
       return buffer.toString()

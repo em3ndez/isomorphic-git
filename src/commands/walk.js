@@ -46,16 +46,21 @@ export async function _walk({
   const root = new Array(walkers.length).fill('.')
   const range = arrayRange(0, walkers.length)
   const unionWalkerFromReaddir = async entries => {
-    range.map(i => {
-      entries[i] = entries[i] && new walkers[i].ConstructEntry(entries[i])
+    range.forEach(i => {
+      const entry = entries[i]
+      entries[i] = entry && new walkers[i].ConstructEntry(entry)
     })
     const subdirs = await Promise.all(
-      range.map(i => (entries[i] ? walkers[i].readdir(entries[i]) : []))
+      range.map(i => {
+        const entry = entries[i]
+        return entry ? walkers[i].readdir(entry) : []
+      })
     )
     // Now process child directories
-    const iterators = subdirs
-      .map(array => (array === null ? [] : array))
-      .map(array => array[Symbol.iterator]())
+    const iterators = subdirs.map(array => {
+      return (array === null ? [] : array)[Symbol.iterator]()
+    })
+
     return {
       entries,
       children: unionOfIterators(iterators),
@@ -72,5 +77,11 @@ export async function _walk({
       return reduce(parent, walkedChildren)
     }
   }
-  return walk(root)
+  const result = await walk(root)
+  // Let walkers write out what they queued during the walk. WORKDIR queues
+  // its index stat refreshes so the index is written once at the end.
+  for (const walker of walkers) {
+    if (walker.flush) await walker.flush()
+  }
+  return result
 }

@@ -8,12 +8,15 @@ import { _walk } from '../commands/walk.js'
 import { CheckoutConflictError } from '../errors/CheckoutConflictError.js'
 import { CommitNotFetchedError } from '../errors/CommitNotFetchedError.js'
 import { InternalError } from '../errors/InternalError.js'
+import { MultipleGitError } from '../errors/MultipleGitError.js'
 import { NotFoundError } from '../errors/NotFoundError.js'
 import { GitConfigManager } from '../managers/GitConfigManager.js'
 import { GitIndexManager } from '../managers/GitIndexManager.js'
 import { GitRefManager } from '../managers/GitRefManager.js'
 import { _readObject as readObject } from '../storage/readObject.js'
+import { assertNoSymlinkInLeadingPath } from '../utils/assertNoSymlinkInLeadingPath.js'
 import { flat } from '../utils/flat.js'
+import { resolveCommit } from '../utils/resolveCommit.js'
 import { worthWalking } from '../utils/worthWalking.js'
 
 /**
@@ -21,6 +24,7 @@ import { worthWalking } from '../utils/worthWalking.js'
  * @param {import('../models/FileSystem.js').FileSystem} args.fs
  * @param {any} args.cache
  * @param {ProgressCallback} [args.onProgress]
+ * @param {PostCheckoutCallback} [args.onPostCheckout]
  * @param {string} args.dir
  * @param {string} args.gitdir
  * @param {string} args.ref
@@ -31,6 +35,9 @@ import { worthWalking } from '../utils/worthWalking.js'
  * @param {boolean} [args.dryRun]
  * @param {boolean} [args.force]
  * @param {boolean} [args.track]
+ * @param {boolean} [args.restoreFromIndex]
+ * @param {boolean} [args.nonBlocking]
+ * @param {number} [args.batchSize]
  *
  * @returns {Promise<void>} Resolves successfully when filesystem operations are complete
  *
@@ -39,6 +46,7 @@ export async function _checkout({
   fs,
   cache,
   onProgress,
+  onPostCheckout,
   dir,
   gitdir,
   remote,
@@ -49,7 +57,20 @@ export async function _checkout({
   dryRun,
   force,
   track = true,
+  restoreFromIndex = false,
+  nonBlocking = false,
+  batchSize = 100,
 }) {
+  // oldOid is defined only if onPostCheckout hook is attached
+  let oldOid
+  if (onPostCheckout) {
+    try {
+      oldOid = await GitRefManager.resolve({ fs, gitdir, ref: 'HEAD' })
+    } catch (err) {
+      oldOid = '0000000000000000000000000000000000000000'
+    }
+  }
+
   // Get tree oid
   let oid
   try {
@@ -82,6 +103,18 @@ export async function _checkout({
     })
   }
 
+  // If `ref` is an annotated tag, use the commit it points to
+  if (!noUpdateHead) {
+    try {
+      oid = (await resolveCommit({ fs, cache, gitdir, oid })).oid
+    } catch (err) {
+      if (err instanceof NotFoundError) {
+        throw new CommitNotFetchedError(ref, err.data.what)
+      }
+      throw err
+    }
+  }
+
   // Update working dir
   if (!noCheckout) {
     let ops
@@ -96,9 +129,11 @@ export async function _checkout({
         ref,
         force,
         filepaths,
+        restoreFromIndex,
       })
     } catch (err) {
       // Throw a more helpful error message for this common mistake.
+      // Only reachable with `noUpdateHead`, otherwise the commit was already read above.
       if (err instanceof NotFoundError && err.data.what === oid) {
         throw new CommitNotFetchedError(ref, oid)
       } else {
@@ -125,6 +160,14 @@ export async function _checkout({
     if (dryRun) {
       // Since the format of 'ops' is in flux, I really would rather folk besides myself not start relying on it
       // return ops
+
+      if (onPostCheckout) {
+        await onPostCheckout({
+          previousHead: oldOid,
+          newHead: oid,
+          type: filepaths != null && filepaths.length > 0 ? 'file' : 'branch',
+        })
+      }
       return
     }
 
@@ -134,64 +177,71 @@ export async function _checkout({
 
     let count = 0
     const total = ops.length
-    await GitIndexManager.acquire({ fs, gitdir, cache }, async function(index) {
-      await Promise.all(
-        ops
-          .filter(
-            ([method]) => method === 'delete' || method === 'delete-index'
-          )
-          .map(async function([method, fullpath]) {
-            const filepath = `${dir}/${fullpath}`
-            if (method === 'delete') {
-              await fs.rm(filepath)
-            }
-            index.delete({ filepath: fullpath })
-            if (onProgress) {
-              await onProgress({
-                phase: 'Updating workdir',
-                loaded: ++count,
-                total,
-              })
-            }
-          })
-      )
-    })
+    await GitIndexManager.acquire(
+      { fs, gitdir, cache },
+      async function (index) {
+        await Promise.all(
+          ops
+            .filter(
+              ([method]) => method === 'delete' || method === 'delete-index'
+            )
+            .map(async function ([method, fullpath]) {
+              const filepath = `${dir}/${fullpath}`
+              if (method === 'delete') {
+                await fs.rm(filepath)
+              }
+              index.delete({ filepath: fullpath })
+              if (onProgress) {
+                await onProgress({
+                  phase: 'Updating workdir',
+                  loaded: ++count,
+                  total,
+                })
+              }
+            })
+        )
+      }
+    )
 
     // Note: this is cannot be done naively in parallel
-    await GitIndexManager.acquire({ fs, gitdir, cache }, async function(index) {
-      for (const [method, fullpath] of ops) {
-        if (method === 'rmdir' || method === 'rmdir-index') {
-          const filepath = `${dir}/${fullpath}`
-          try {
-            if (method === 'rmdir-index') {
+    await GitIndexManager.acquire(
+      { fs, gitdir, cache },
+      async function (index) {
+        for (const [method, fullpath] of ops) {
+          if (method === 'rmdir' || method === 'rmdir-index') {
+            const filepath = `${dir}/${fullpath}`
+            try {
+              if (method === 'rmdir') {
+                await fs.rmdir(filepath)
+              }
               index.delete({ filepath: fullpath })
-            }
-            await fs.rmdir(filepath)
-            if (onProgress) {
-              await onProgress({
-                phase: 'Updating workdir',
-                loaded: ++count,
-                total,
-              })
-            }
-          } catch (e) {
-            if (e.code === 'ENOTEMPTY') {
-              console.log(
-                `Did not delete ${fullpath} because directory is not empty`
-              )
-            } else {
-              throw e
+              if (onProgress) {
+                await onProgress({
+                  phase: 'Updating workdir',
+                  loaded: ++count,
+                  total,
+                })
+              }
+            } catch (e) {
+              if (e.code === 'ENOTEMPTY') {
+                console.log(
+                  `Did not delete ${fullpath} because directory is not empty`
+                )
+              } else {
+                throw e
+              }
             }
           }
         }
       }
-    })
+    )
 
     await Promise.all(
       ops
         .filter(([method]) => method === 'mkdir' || method === 'mkdir-index')
-        .map(async function([_, fullpath]) {
+        .map(async function ([_, fullpath]) {
           const filepath = `${dir}/${fullpath}`
+          await assertNoSymlinkInLeadingPath(fs, dir, fullpath)
           await fs.mkdir(filepath)
           if (onProgress) {
             await onProgress({
@@ -203,72 +253,148 @@ export async function _checkout({
         })
     )
 
-    await GitIndexManager.acquire({ fs, gitdir, cache }, async function(index) {
-      await Promise.all(
-        ops
-          .filter(
-            ([method]) =>
-              method === 'create' ||
-              method === 'create-index' ||
-              method === 'update' ||
-              method === 'mkdir-index'
-          )
-          .map(async function([method, fullpath, oid, mode, chmod]) {
-            const filepath = `${dir}/${fullpath}`
-            try {
-              if (method !== 'create-index' && method !== 'mkdir-index') {
-                const { object } = await readObject({ fs, cache, gitdir, oid })
-                if (chmod) {
-                  // Note: the mode option of fs.write only works when creating files,
-                  // not updating them. Since the `fs` plugin doesn't expose `chmod` this
-                  // is our only option.
-                  await fs.rm(filepath)
-                }
-                if (mode === 0o100644) {
-                  // regular file
-                  await fs.write(filepath, object)
-                } else if (mode === 0o100755) {
-                  // executable file
-                  await fs.write(filepath, object, { mode: 0o777 })
-                } else if (mode === 0o120000) {
-                  // symlink
-                  await fs.writelink(filepath, object)
-                } else {
-                  throw new InternalError(
-                    `Invalid mode 0o${mode.toString(8)} detected in blob ${oid}`
-                  )
-                }
-              }
-
-              const stats = await fs.lstat(filepath)
-              // We can't trust the executable bit returned by lstat on Windows,
-              // so we need to preserve this value from the TREE.
-              // TODO: Figure out how git handles this internally.
-              if (mode === 0o100755) {
-                stats.mode = 0o755
-              }
-              // Submodules are present in the git index but use a unique mode different from trees
-              if (method === 'mkdir-index') {
-                stats.mode = 0o160000
-              }
-              index.insert({
-                filepath: fullpath,
-                stats,
-                oid,
-              })
-              if (onProgress) {
-                await onProgress({
-                  phase: 'Updating workdir',
-                  loaded: ++count,
-                  total,
-                })
-              }
-            } catch (e) {
-              console.log(e)
-            }
-          })
+    if (nonBlocking) {
+      // Filter eligible operations first
+      const eligibleOps = ops.filter(
+        ([method]) =>
+          method === 'create' ||
+          method === 'create-index' ||
+          method === 'update' ||
+          method === 'mkdir-index'
       )
-    })
+
+      const updateWorkingDirResults = await batchAllSettled(
+        'Update Working Dir',
+        eligibleOps.map(
+          ([method, fullpath, oid, mode, chmod]) =>
+            () =>
+              updateWorkingDir({ fs, cache, gitdir, dir }, [
+                method,
+                fullpath,
+                oid,
+                mode,
+                chmod,
+              ])
+        ),
+        onProgress,
+        batchSize
+      )
+
+      await GitIndexManager.acquire(
+        { fs, gitdir, cache, allowUnmerged: true },
+        async function (index) {
+          await batchAllSettled(
+            'Update Index',
+            updateWorkingDirResults.map(
+              ([fullpath, oid, stats]) =>
+                () =>
+                  updateIndex({ index, fullpath, oid, stats })
+            ),
+            onProgress,
+            batchSize
+          )
+        }
+      )
+    } else {
+      await GitIndexManager.acquire(
+        { fs, gitdir, cache, allowUnmerged: true },
+        async function (index) {
+          const settled = await Promise.allSettled(
+            ops
+              .filter(
+                ([method]) =>
+                  method === 'create' ||
+                  method === 'create-index' ||
+                  method === 'update' ||
+                  method === 'mkdir-index'
+              )
+              .map(async function ([method, fullpath, oid, mode, chmod]) {
+                const filepath = `${dir}/${fullpath}`
+                if (method !== 'create-index' && method !== 'mkdir-index') {
+                  // Don't write through a symlinked leading path: a parent component that
+                  // is a symlink could otherwise redirect the write outside the working
+                  // tree. git applies the same check (it does not follow symlinks here).
+                  await assertNoSymlinkInLeadingPath(fs, dir, fullpath)
+                  const { object } = await readObject({
+                    fs,
+                    cache,
+                    gitdir,
+                    oid,
+                  })
+                  if (chmod) {
+                    // Note: the mode option of fs.write only works when creating files,
+                    // not updating them. Since the `fs` plugin doesn't expose `chmod` this
+                    // is our only option.
+                    await fs.rm(filepath)
+                  }
+                  if (mode === 0o100644) {
+                    // regular file
+                    await fs.write(filepath, object)
+                  } else if (mode === 0o100755) {
+                    // executable file
+                    await fs.write(filepath, object, { mode: 0o777 })
+                  } else if (mode === 0o120000) {
+                    // symlink
+                    await fs.writelink(filepath, object)
+                  } else {
+                    throw new InternalError(
+                      `Invalid mode 0o${mode.toString(
+                        8
+                      )} detected in blob ${oid}`
+                    )
+                  }
+                }
+
+                const stats = await fs.lstat(filepath)
+                // We can't trust the executable bit returned by lstat on Windows,
+                // so we need to preserve this value from the TREE.
+                // TODO: Figure out how git handles this internally.
+                if (mode === 0o100755) {
+                  stats.mode = 0o755
+                }
+                // Submodules are present in the git index but use a unique mode different from trees
+                if (method === 'mkdir-index') {
+                  stats.mode = 0o160000
+                }
+                index.insert({
+                  filepath: fullpath,
+                  stats,
+                  oid,
+                })
+                if (onProgress) {
+                  await onProgress({
+                    phase: 'Updating workdir',
+                    loaded: ++count,
+                    total,
+                  })
+                }
+              })
+          )
+          const rejections = []
+          for (const result of settled) {
+            if (result.status === 'rejected') {
+              rejections.push(result.reason)
+              // eslint-disable-next-line no-console
+              console.error(
+                '[isomorphic-git checkout] task rejected:',
+                result.reason?.stack ?? result.reason
+              )
+            }
+          }
+          if (rejections.length > 0) {
+            throw new MultipleGitError(rejections)
+          }
+        }
+      )
+    }
+
+    if (onPostCheckout) {
+      await onPostCheckout({
+        previousHead: oldOid,
+        newHead: oid,
+        type: filepaths != null && filepaths.length > 0 ? 'file' : 'branch',
+      })
+    }
   }
 
   // Update HEAD
@@ -297,6 +423,7 @@ async function analyze({
   ref,
   force,
   filepaths,
+  restoreFromIndex,
 }) {
   let count = 0
   return _walk({
@@ -304,8 +431,8 @@ async function analyze({
     cache,
     dir,
     gitdir,
-    trees: [TREE({ ref }), WORKDIR(), STAGE()],
-    map: async function(fullpath, [commit, workdir, stage]) {
+    trees: [restoreFromIndex ? STAGE() : TREE({ ref }), WORKDIR(), STAGE()],
+    map: async function (fullpath, [commit, workdir, stage]) {
       if (fullpath === '.') return
       // match against base paths
       if (filepaths && !filepaths.some(base => worthWalking(fullpath, base))) {
@@ -318,7 +445,7 @@ async function analyze({
 
       // This is a kind of silly pattern but it worked so well for me in the past
       // and it makes intuitively demonstrating exhaustiveness so *easy*.
-      // This checks for the presense and/or absence of each of the 3 entries,
+      // This checks for the presence and/or absence of each of the 3 entries,
       // converts that to a 3-bit binary representation, and then handles
       // every possible combination (2^3 or 8 cases) with a lookup table.
       const key = [!!stage, !!commit, !!workdir].map(Number).join('')
@@ -329,7 +456,12 @@ async function analyze({
         // Ignore workdir files that are not tracked and not part of the new commit.
         case '001':
           // OK, make an exception for explicitly named files.
-          if (force && filepaths && filepaths.includes(fullpath)) {
+          if (
+            !restoreFromIndex &&
+            force &&
+            filepaths &&
+            filepaths.includes(fullpath)
+          ) {
             return ['delete', fullpath]
           }
           return
@@ -439,7 +571,7 @@ async function analyze({
         case '101': {
           switch (await stage.type()) {
             case 'tree': {
-              return ['rmdir', fullpath]
+              return ['rmdir-index', fullpath]
             }
             case 'blob': {
               // Git checks that the workdir.oid === stage.oid before deleting file
@@ -563,7 +695,7 @@ async function analyze({
       }
     },
     // Modify the default flat mapping
-    reduce: async function(parent, children) {
+    reduce: async function (parent, children) {
       children = flat(children)
       if (!parent) {
         return children
@@ -576,4 +708,84 @@ async function analyze({
       }
     },
   })
+}
+
+async function updateIndex({ index, fullpath, stats, oid }) {
+  try {
+    index.insert({
+      filepath: fullpath,
+      stats,
+      oid,
+    })
+  } catch (e) {
+    console.warn(`Error inserting ${fullpath} into index:`, e)
+  }
+}
+async function updateWorkingDir(
+  { fs, cache, gitdir, dir },
+  [method, fullpath, oid, mode, chmod]
+) {
+  const filepath = `${dir}/${fullpath}`
+  if (method !== 'create-index' && method !== 'mkdir-index') {
+    await assertNoSymlinkInLeadingPath(fs, dir, fullpath)
+    const { object } = await readObject({ fs, cache, gitdir, oid })
+    if (chmod) {
+      await fs.rm(filepath)
+    }
+    if (mode === 0o100644) {
+      // regular file
+      await fs.write(filepath, object)
+    } else if (mode === 0o100755) {
+      // executable file
+      await fs.write(filepath, object, { mode: 0o777 })
+    } else if (mode === 0o120000) {
+      // symlink
+      await fs.writelink(filepath, object)
+    } else {
+      throw new InternalError(
+        `Invalid mode 0o${mode.toString(8)} detected in blob ${oid}`
+      )
+    }
+  }
+  const stats = await fs.lstat(filepath)
+  if (mode === 0o100755) {
+    stats.mode = 0o755
+  }
+  if (method === 'mkdir-index') {
+    stats.mode = 0o160000
+  }
+  return [fullpath, oid, stats]
+}
+
+async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+  const results = []
+  const rejections = []
+  for (let i = 0; i < tasks.length; i += batchSize) {
+    const batch = tasks.slice(i, i + batchSize).map(task => task())
+    const batchResults = await Promise.allSettled(batch)
+    batchResults.forEach(result => {
+      if (result.status === 'fulfilled') {
+        results.push(result.value)
+      } else {
+        rejections.push(result.reason)
+        // eslint-disable-next-line no-console
+        console.error(
+          `[isomorphic-git ${operationName}] task rejected:`,
+          result.reason?.stack ?? result.reason
+        )
+      }
+    })
+    if (onProgress) {
+      await onProgress({
+        phase: 'Updating workdir',
+        loaded: i + batch.length,
+        total: tasks.length,
+      })
+    }
+  }
+
+  if (rejections.length > 0) {
+    throw new MultipleGitError(rejections)
+  }
+  return results
 }

@@ -1,7 +1,8 @@
 // @ts-check
 import { _readTree } from '../commands/readTree.js'
 import { NotFoundError } from '../errors/NotFoundError.js'
-import { ObjectTypeError } from '../errors/ObjectTypeError'
+import { ObjectTypeError } from '../errors/ObjectTypeError.js'
+import { GitConfigManager } from '../managers/GitConfigManager.js'
 import { GitIgnoreManager } from '../managers/GitIgnoreManager.js'
 import { GitIndexManager } from '../managers/GitIndexManager.js'
 import { GitRefManager } from '../managers/GitRefManager.js'
@@ -10,6 +11,7 @@ import { GitTree } from '../models/GitTree.js'
 import { _readObject } from '../storage/readObject.js'
 import { assertParameter } from '../utils/assertParameter.js'
 import { compareStats } from '../utils/compareStats.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { hashObject } from '../utils/hashObject.js'
 import { join } from '../utils/join.js'
 
@@ -40,6 +42,11 @@ import { join } from '../utils/join.js'
  * @param {string} [args.gitdir=join(dir, '.git')] - [required] The [git directory](dir-vs-gitdir.md) path
  * @param {string} args.filepath - The path to the file to query
  * @param {object} [args.cache] - a [cache](cache.md) object
+ * @param {boolean} [args.refresh = true] - when false, do not refresh the
+ *   `.git/index` stat cache when the working-tree file's contents still match
+ *   the staged blob. The call becomes read-only with respect to the index, at
+ *   the cost of recomputing the SHA1 on subsequent calls for files whose
+ *   stat info has drifted.
  *
  * @returns {Promise<'ignored'|'unmodified'|'*modified'|'*deleted'|'*added'|'absent'|'modified'|'deleted'|'added'|'*unmodified'|'*absent'|'*undeleted'|'*undeletemodified'>} Resolves successfully with the file's git status
  *
@@ -54,6 +61,7 @@ export async function status({
   gitdir = join(dir, '.git'),
   filepath,
   cache = {},
+  refresh = true,
 }) {
   try {
     assertParameter('fs', _fs)
@@ -61,32 +69,38 @@ export async function status({
     assertParameter('filepath', filepath)
 
     const fs = new FileSystem(_fs)
-    const ignored = await GitIgnoreManager.isIgnored({
-      fs,
-      gitdir,
-      dir,
-      filepath,
-    })
-    if (ignored) {
-      return 'ignored'
-    }
-    const headTree = await getHeadTree({ fs, cache, gitdir })
+    const updatedGitdir = await discoverGitdir({ fsp: fs, dotgit: gitdir })
+    const headTree = await getHeadTree({ fs, cache, gitdir: updatedGitdir })
     const treeOid = await getOidAtPath({
       fs,
       cache,
-      gitdir,
+      gitdir: updatedGitdir,
       tree: headTree,
       path: filepath,
     })
     const indexEntry = await GitIndexManager.acquire(
-      { fs, gitdir, cache },
-      async function(index) {
+      { fs, gitdir: updatedGitdir, cache },
+      async function (index) {
         for (const entry of index) {
           if (entry.path === filepath) return entry
         }
         return null
       }
     )
+    // .gitignore governs untracked files. A file in HEAD or in the index is
+    // tracked, so canonical git keeps reporting its real state, and
+    // `git check-ignore` does not match it. statusMatrix already does this.
+    if (treeOid === null && indexEntry === null) {
+      const ignored = await GitIgnoreManager.isIgnored({
+        fs,
+        gitdir: updatedGitdir,
+        dir,
+        filepath,
+      })
+      if (ignored) {
+        return 'ignored'
+      }
+    }
     const stats = await fs.lstat(join(dir, filepath))
 
     const H = treeOid !== null // head
@@ -97,24 +111,30 @@ export async function status({
       if (I && !compareStats(indexEntry, stats)) {
         return indexEntry.oid
       } else {
-        const object = await fs.read(join(dir, filepath))
+        // Read through the same core.autocrlf normalisation GitWalkerFs uses,
+        // so the working copy hashes to the blob that was stored. Without it a
+        // CRLF checkout of an LF blob reads as modified.
+        const config = await GitConfigManager.get({ fs, gitdir: updatedGitdir })
+        const autocrlf = await config.get('core.autocrlf')
+        const object = await fs.read(join(dir, filepath), { autocrlf })
         const workdirOid = await hashObject({
-          gitdir,
+          gitdir: updatedGitdir,
           type: 'blob',
           object,
         })
         // If the oid in the index === working dir oid but stats differed update cache
-        if (I && indexEntry.oid === workdirOid) {
+        if (refresh && I && indexEntry.oid === workdirOid) {
           // and as long as our fs.stats aren't bad.
           // size of -1 happens over a BrowserFS HTTP Backend that doesn't serve Content-Length headers
           // (like the Karma webserver) because BrowserFS HTTP Backend uses HTTP HEAD requests to do fs.stat
           if (stats.size !== -1) {
             // We don't await this so we can return faster for one-off cases.
-            GitIndexManager.acquire({ fs, gitdir, cache }, async function(
-              index
-            ) {
-              index.insert({ filepath, stats, oid: workdirOid })
-            })
+            GitIndexManager.acquire(
+              { fs, gitdir: updatedGitdir, cache },
+              async function (index) {
+                index.insert({ filepath, stats, oid: workdirOid })
+              }
+            )
           }
         }
         return workdirOid
@@ -170,7 +190,7 @@ export async function status({
   }
 }
 
-async function getOidAtPath({ fs, cache, gitdir, tree, path }) {
+async function getOidAtPath({ fs, cache, gitdir: updatedGitdir, tree, path }) {
   if (typeof path === 'string') path = path.split('/')
   const dirname = path.shift()
   for (const entry of tree) {
@@ -181,12 +201,12 @@ async function getOidAtPath({ fs, cache, gitdir, tree, path }) {
       const { type, object } = await _readObject({
         fs,
         cache,
-        gitdir,
+        gitdir: updatedGitdir,
         oid: entry.oid,
       })
       if (type === 'tree') {
         const tree = GitTree.from(object)
-        return getOidAtPath({ fs, cache, gitdir, tree, path })
+        return getOidAtPath({ fs, cache, gitdir: updatedGitdir, tree, path })
       }
       if (type === 'blob') {
         throw new ObjectTypeError(entry.oid, type, 'blob', path.join('/'))
@@ -196,17 +216,21 @@ async function getOidAtPath({ fs, cache, gitdir, tree, path }) {
   return null
 }
 
-async function getHeadTree({ fs, cache, gitdir }) {
+async function getHeadTree({ fs, cache, gitdir: updatedGitdir }) {
   // Get the tree from the HEAD commit.
   let oid
   try {
-    oid = await GitRefManager.resolve({ fs, gitdir, ref: 'HEAD' })
+    oid = await GitRefManager.resolve({
+      fs,
+      gitdir: updatedGitdir,
+      ref: 'HEAD',
+    })
   } catch (e) {
     // Handle fresh branches with no commits
     if (e instanceof NotFoundError) {
       return []
     }
   }
-  const { tree } = await _readTree({ fs, cache, gitdir, oid })
+  const { tree } = await _readTree({ fs, cache, gitdir: updatedGitdir, oid })
   return tree
 }

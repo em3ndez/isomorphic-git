@@ -2,13 +2,10 @@
 import '../typedefs.js'
 
 import { _commit } from '../commands/commit.js'
-import { MissingNameError } from '../errors/MissingNameError.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
-import { normalizeAuthorObject } from '../utils/normalizeAuthorObject.js'
-import { normalizeCommitterObject } from '../utils/normalizeCommitterObject.js'
-
 /**
  * Create a new commit
  *
@@ -17,7 +14,7 @@ import { normalizeCommitterObject } from '../utils/normalizeCommitterObject.js'
  * @param {SignCallback} [args.onSign] - a PGP signing implementation
  * @param {string} [args.dir] - The [working tree](dir-vs-gitdir.md) directory path
  * @param {string} [args.gitdir=join(dir,'.git')] - [required] The [git directory](dir-vs-gitdir.md) path
- * @param {string} args.message - The commit message to use.
+ * @param {string} [args.message] - The commit message to use. Required, unless `amend === true`
  * @param {Object} [args.author] - The details about the author.
  * @param {string} [args.author.name] - Default is `user.name` config.
  * @param {string} [args.author.email] - Default is `user.email` config.
@@ -29,8 +26,10 @@ import { normalizeCommitterObject } from '../utils/normalizeCommitterObject.js'
  * @param {number} [args.committer.timestamp=Math.floor(Date.now()/1000)] - Set the committer timestamp field. This is the integer number of seconds since the Unix epoch (1970-01-01 00:00:00).
  * @param {number} [args.committer.timezoneOffset] - Set the committer timezone offset field. This is the difference, in minutes, from the current timezone to UTC. Default is `(new Date()).getTimezoneOffset()`.
  * @param {string} [args.signingKey] - Sign the tag object using this private PGP key.
+ * @param {boolean} [args.amend = false] - If true, replaces the last commit pointed to by `ref` with a new commit.
  * @param {boolean} [args.dryRun = false] - If true, simulates making a commit so you can test whether it would succeed. Implies `noUpdateBranch`.
  * @param {boolean} [args.noUpdateBranch = false] - If true, does not update the branch pointer after creating the commit.
+ * @param {boolean} [args.disallowEmpty = false] - If true, throws an error instead of creating a commit with no staged changes.
  * @param {string} [args.ref] - The fully expanded name of the branch to commit to. Default is the current branch pointed to by HEAD. (TODO: fix it so it can expand branch names without throwing if the branch doesn't exist yet.)
  * @param {string[]} [args.parent] - The SHA-1 object ids of the commits to use as parents. If not specified, the commit pointed to by `ref` is used.
  * @param {string} [args.tree] - The SHA-1 object id of the tree to use. If not specified, a new tree object is created from the current git index.
@@ -57,11 +56,13 @@ export async function commit({
   dir,
   gitdir = join(dir, '.git'),
   message,
-  author: _author,
-  committer: _committer,
+  author,
+  committer,
   signingKey,
+  amend = false,
   dryRun = false,
   noUpdateBranch = false,
+  disallowEmpty = false,
   ref,
   parent,
   tree,
@@ -69,34 +70,28 @@ export async function commit({
 }) {
   try {
     assertParameter('fs', _fs)
-    assertParameter('message', message)
+    if (!amend) {
+      assertParameter('message', message)
+    }
     if (signingKey) {
       assertParameter('onSign', onSign)
     }
     const fs = new FileSystem(_fs)
-
-    const author = await normalizeAuthorObject({ fs, gitdir, author: _author })
-    if (!author) throw new MissingNameError('author')
-
-    const committer = await normalizeCommitterObject({
-      fs,
-      gitdir,
-      author,
-      committer: _committer,
-    })
-    if (!committer) throw new MissingNameError('committer')
+    const updatedGitdir = await discoverGitdir({ fsp: fs, dotgit: gitdir })
 
     return await _commit({
       fs,
       cache,
       onSign,
-      gitdir,
+      gitdir: updatedGitdir,
       message,
       author,
       committer,
       signingKey,
+      amend,
       dryRun,
       noUpdateBranch,
+      disallowEmpty,
       ref,
       parent,
       tree,

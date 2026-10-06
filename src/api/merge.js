@@ -5,6 +5,7 @@ import { _merge } from '../commands/merge.js'
 import { MissingNameError } from '../errors/MissingNameError.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 import { normalizeAuthorObject } from '../utils/normalizeAuthorObject.js'
 import { normalizeCommitterObject } from '../utils/normalizeCommitterObject.js'
@@ -106,6 +107,7 @@ import { normalizeCommitterObject } from '../utils/normalizeCommitterObject.js'
  * @param {string} [args.signingKey] - passed to [commit](commit.md) when creating a merge commit
  * @param {object} [args.cache] - a [cache](cache.md) object
  * @param {MergeDriverCallback} [args.mergeDriver] - a [merge driver](mergeDriver.md) implementation
+ * @param {boolean} [args.allowUnrelatedHistories = false] - If true, allows merging histories of two branches that started their lives independently.
  *
  * @returns {Promise<MergeResult>} Resolves to a description of the merge operation
  * @see MergeResult
@@ -138,6 +140,7 @@ export async function merge({
   signingKey,
   cache = {},
   mergeDriver,
+  allowUnrelatedHistories = false,
 }) {
   try {
     assertParameter('fs', _fs)
@@ -145,15 +148,20 @@ export async function merge({
       assertParameter('onSign', onSign)
     }
     const fs = new FileSystem(_fs)
+    const updatedGitdir = await discoverGitdir({ fsp: fs, dotgit: gitdir })
 
-    const author = await normalizeAuthorObject({ fs, gitdir, author: _author })
+    const author = await normalizeAuthorObject({
+      fs,
+      gitdir: updatedGitdir,
+      author: _author,
+    })
     if (!author && (!fastForwardOnly || !fastForward)) {
       throw new MissingNameError('author')
     }
 
     const committer = await normalizeCommitterObject({
       fs,
-      gitdir,
+      gitdir: updatedGitdir,
       author,
       committer: _committer,
     })
@@ -165,7 +173,7 @@ export async function merge({
       fs,
       cache,
       dir,
-      gitdir,
+      gitdir: updatedGitdir,
       ours,
       theirs,
       fastForward,
@@ -179,6 +187,7 @@ export async function merge({
       signingKey,
       onSign,
       mergeDriver,
+      allowUnrelatedHistories,
     })
   } catch (err) {
     err.caller = 'git.merge'

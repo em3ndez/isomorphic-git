@@ -1,21 +1,33 @@
-import http from 'isomorphic-git/http'
+import * as path from 'path'
 
-/* eslint-env node, browser, jasmine */
-const {
+import {
   Errors,
   checkout,
+  currentBranch,
   listFiles,
   add,
   commit,
   branch,
   getConfig,
-  fetch: gitFetch,
+  fetch as gitFetch,
+  remove,
   setConfig,
-} = require('isomorphic-git')
+  statusMatrix,
+  hashBlob,
+  updateIndex,
+  annotatedTag,
+  resolveRef,
+  readCommit,
+  writeTag,
+  writeRef,
+} from 'isomorphic-git'
+import http from 'isomorphic-git/http'
 
 /* eslint-env node, browser, jasmine */
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+/* eslint-env node, browser, jasmine */
+
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 // this is so it works with either Node local tests or Browser WAN tests
 const localhost =
@@ -25,10 +37,19 @@ describe('checkout', () => {
   it('checkout', async () => {
     // Setup
     const { fs, dir, gitdir } = await makeFixture('test-checkout')
-    await checkout({ fs, dir, gitdir, ref: 'test-branch' })
+    const onPostCheckout = []
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+      onPostCheckout: args => {
+        onPostCheckout.push(args)
+      },
+    })
     const files = await fs.readdir(dir)
     expect(files.sort()).toMatchInlineSnapshot(`
-      Array [
+      [
         ".babelrc",
         ".editorconfig",
         ".flowconfig",
@@ -43,7 +64,7 @@ describe('checkout', () => {
     `)
     const index = await listFiles({ fs, dir, gitdir })
     expect(index).toMatchInlineSnapshot(`
-      Array [
+      [
         ".babelrc",
         ".editorconfig",
         ".flowconfig",
@@ -78,6 +99,13 @@ describe('checkout', () => {
     `)
     const sha = await fs.read(gitdir + '/HEAD', 'utf8')
     expect(sha).toBe('ref: refs/heads/test-branch\n')
+    expect(onPostCheckout).toEqual([
+      {
+        newHead: 'e10ebb90d03eaacca84de1af0a59b444232da99e',
+        previousHead: '0f55956cbd50de80c2f86e6e565f00c92ce86631',
+        type: 'branch',
+      },
+    ])
   })
 
   it('checkout by tag', async () => {
@@ -91,7 +119,7 @@ describe('checkout', () => {
     })
     const files = await fs.readdir(dir)
     expect(files.sort()).toMatchInlineSnapshot(`
-      Array [
+      [
         ".babelrc",
         ".editorconfig",
         ".flowconfig",
@@ -106,7 +134,7 @@ describe('checkout', () => {
     `)
     const index = await listFiles({ fs, dir, gitdir })
     expect(index).toMatchInlineSnapshot(`
-      Array [
+      [
         ".babelrc",
         ".editorconfig",
         ".flowconfig",
@@ -143,6 +171,98 @@ describe('checkout', () => {
     expect(sha).toBe('e10ebb90d03eaacca84de1af0a59b444232da99e\n')
   })
 
+  it('checkout by annotated tag', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await annotatedTag({
+      fs,
+      gitdir,
+      ref: 'v1.0.0-annotated',
+      object: 'v1.0.0',
+      message: 'annotated tag',
+      tagger: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+    })
+    const commitOid = await resolveRef({ fs, gitdir, ref: 'v1.0.0' })
+    // Test
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'v1.0.0-annotated',
+    })
+    // HEAD should point to the commit, not to the tag object
+    expect(await resolveRef({ fs, gitdir, ref: 'HEAD' })).toBe(commitOid)
+  })
+
+  it('checkout by annotated tag oid', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await annotatedTag({
+      fs,
+      gitdir,
+      ref: 'v1.0.0-annotated',
+      object: 'v1.0.0',
+      message: 'annotated tag',
+      tagger: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+    })
+    const commitOid = await resolveRef({ fs, gitdir, ref: 'v1.0.0' })
+    const tagOid = await resolveRef({ fs, gitdir, ref: 'v1.0.0-annotated' })
+    // Test
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: tagOid,
+    })
+    // HEAD should point to the commit, not to the tag object
+    expect(await resolveRef({ fs, gitdir, ref: 'HEAD' })).toBe(commitOid)
+  })
+
+  it('checkout filepaths from an annotated tag of a tree', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    const { commit: c } = await readCommit({
+      fs,
+      gitdir,
+      oid: await resolveRef({ fs, gitdir, ref: 'v1.0.0' }),
+    })
+    await annotatedTag({
+      fs,
+      gitdir,
+      ref: 'tree-tag',
+      object: c.tree,
+      message: 'annotated tag of a tree',
+      tagger: {
+        name: 'Mr. Test',
+        email: 'mrtest@example.com',
+        timestamp: 1262356920,
+        timezoneOffset: -0,
+      },
+    })
+    await fs.write(`${dir}/README.md`, 'changed', 'utf8')
+    // Test
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'tree-tag',
+      filepaths: ['README.md'],
+      noUpdateHead: true,
+      force: true,
+    })
+    expect(await fs.read(`${dir}/README.md`, 'utf8')).not.toBe('changed')
+  })
+
   it('checkout by SHA', async () => {
     // Setup
     const { fs, dir, gitdir } = await makeFixture('test-checkout')
@@ -154,7 +274,7 @@ describe('checkout', () => {
     })
     const files = await fs.readdir(dir)
     expect(files.sort()).toMatchInlineSnapshot(`
-      Array [
+      [
         ".babelrc",
         ".editorconfig",
         ".flowconfig",
@@ -169,7 +289,7 @@ describe('checkout', () => {
     `)
     const index = await listFiles({ fs, dir, gitdir })
     expect(index).toMatchInlineSnapshot(`
-      Array [
+      [
         ".babelrc",
         ".editorconfig",
         ".flowconfig",
@@ -221,16 +341,48 @@ describe('checkout', () => {
     error = error.toJSON()
     delete error.stack
     expect(error).toMatchInlineSnapshot(`
-      Object {
+      {
         "caller": "git.checkout",
         "code": "CommitNotFetchedError",
-        "data": Object {
+        "data": {
           "oid": "033417ae18b174f078f2f44232cb7a374f4c60ce",
           "ref": "missing-branch",
         },
-        "message": "Failed to checkout \\"missing-branch\\" because commit 033417ae18b174f078f2f44232cb7a374f4c60ce is not available locally. Do a git fetch to make the branch available locally.",
+        "message": "Failed to checkout "missing-branch" because commit 033417ae18b174f078f2f44232cb7a374f4c60ce is not available locally. Do a git fetch to make the branch available locally.",
       }
     `)
+  })
+
+  it('checkout annotated tag of an unfetched commit', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    const missingOid = '1111111111111111111111111111111111111111'
+    const tagOid = await writeTag({
+      fs,
+      gitdir,
+      tag: {
+        object: missingOid,
+        type: 'commit',
+        tag: 'missing-tag',
+        tagger: {
+          name: 'Mr. Test',
+          email: 'mrtest@example.com',
+          timestamp: 1262356920,
+          timezoneOffset: -0,
+        },
+        message: 'annotated tag of a missing commit',
+      },
+    })
+    await writeRef({ fs, gitdir, ref: 'refs/tags/missing-tag', value: tagOid })
+    let error = null
+    // Test
+    try {
+      await checkout({ fs, dir, gitdir, ref: 'missing-tag' })
+    } catch (err) {
+      error = err
+    }
+    expect(error instanceof Errors.CommitNotFetchedError).toBe(true)
+    expect(error.data.oid).toBe(missingOid)
   })
 
   it('checkout file permissions', async () => {
@@ -307,14 +459,14 @@ describe('checkout', () => {
     })
     const files = await fs.readdir(dir)
     expect(files.sort()).toMatchInlineSnapshot(`
-      Array [
+      [
         "src",
         "test",
       ]
     `)
     const index = await listFiles({ fs, dir, gitdir })
     expect(index).toMatchInlineSnapshot(`
-      Array [
+      [
         "src/models/GitBlob.js",
         "src/models/GitCommit.js",
         "src/models/GitConfig.js",
@@ -325,6 +477,22 @@ describe('checkout', () => {
         "test/snapshots/resolveRef.js.snap",
       ]
     `)
+  })
+
+  it('checkout filepaths stop at a path component boundary', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    // 'src/model' is not a path in the tree. 'src/models' is, and it must not
+    // be dragged in just because its name starts the same way.
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+      filepaths: ['src/model'],
+    })
+    const index = await listFiles({ fs, dir, gitdir })
+    expect(index).toEqual([])
   })
 
   it('checkout files using filepaths', async () => {
@@ -339,13 +507,13 @@ describe('checkout', () => {
     })
     const files = await fs.readdir(dir)
     expect(files.sort()).toMatchInlineSnapshot(`
-      Array [
+      [
         "src",
       ]
     `)
     const index = await listFiles({ fs, dir, gitdir })
     expect(index).toMatchInlineSnapshot(`
-      Array [
+      [
         "src/models/GitBlob.js",
         "src/utils/write.js",
       ]
@@ -440,6 +608,40 @@ describe('checkout', () => {
     }
     expect(error).toBeNull()
     expect(await fs.read(`${dir}/README.md`, 'utf8')).not.toBe('Hello world')
+  })
+
+  it('restores filepaths from the index when no ref is provided', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await checkout({ fs, dir, gitdir, ref: 'test-branch' })
+    await fs.write(`${dir}/README.md`, 'staged content', 'utf8')
+    await add({ fs, dir, gitdir, filepath: 'README.md' })
+    await fs.write(`${dir}/README.md`, 'workdir content', 'utf8')
+
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      force: true,
+      filepaths: ['README.md'],
+    })
+
+    expect(await fs.read(`${dir}/README.md`, 'utf8')).toBe('staged content')
+    expect(
+      await statusMatrix({ fs, dir, gitdir, filepaths: ['README.md'] })
+    ).toEqual([['README.md', 1, 2, 2]])
+  })
+
+  it('does not delete a staged-deleted filepath when restoring from the index', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    const filepath = 'src/utils/exists.js'
+    await checkout({ fs, dir, gitdir, ref: 'test-branch' })
+    const contents = await fs.read(`${dir}/${filepath}`)
+    await remove({ fs, dir, gitdir, filepath })
+
+    await checkout({ fs, dir, gitdir, force: true, filepaths: [filepath] })
+
+    expect(await fs.read(`${dir}/${filepath}`)).toEqual(contents)
+    expect(await listFiles({ fs, dir, gitdir })).not.toContain(filepath)
   })
 
   it('checkout files should not delete other files', async () => {
@@ -605,5 +807,164 @@ describe('checkout', () => {
 
     expect(merge).toBeUndefined()
     expect(remote).toBeUndefined()
+  })
+
+  it('onPostCheckout dry run', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    const onPostCheckout = []
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+      dryRun: true,
+      onPostCheckout: args => {
+        onPostCheckout.push(args)
+      },
+    })
+
+    expect(onPostCheckout).toEqual([
+      {
+        newHead: 'e10ebb90d03eaacca84de1af0a59b444232da99e',
+        previousHead: '0f55956cbd50de80c2f86e6e565f00c92ce86631',
+        type: 'branch',
+      },
+    ])
+  })
+
+  it('onPostCheckout with specified filepaths', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+    })
+    // Test
+    const onPostCheckout = []
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+      filepaths: ['src/utils', 'test'],
+      onPostCheckout: args => {
+        onPostCheckout.push(args)
+      },
+    })
+
+    expect(onPostCheckout).toEqual([
+      {
+        newHead: 'e10ebb90d03eaacca84de1af0a59b444232da99e',
+        previousHead: 'e10ebb90d03eaacca84de1af0a59b444232da99e',
+        type: 'file',
+      },
+    ])
+  })
+
+  it('checkout should not delete ignored files', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+
+    // Checkout the test-branch
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+    })
+
+    // Create a branch from test-branch
+    await branch({
+      fs,
+      dir,
+      gitdir,
+      ref: 'branch-w-ignored-dir',
+      checkout: true,
+    })
+    // Add a regular file to the ignored dir
+    await fs.write(`${dir}/ignored/regular-file.txt`, 'regular file', {
+      mode: 0o666,
+    })
+
+    // Add and commit a gitignore, ignoring everything but itself
+    const gitignoreContent = `*
+!.gitignore`
+    await fs.write(`${dir}/ignored/.gitignore`, gitignoreContent, {
+      mode: 0o666,
+    })
+    await add({ fs, dir, gitdir, filepath: 'ignored/.gitignore' })
+
+    await commit({
+      fs,
+      dir,
+      gitdir,
+      author: { name: 'Git', email: 'git@example.org' },
+      message: 'add gitignore',
+    })
+
+    // Checkout the test-branch, which does not contain the ignore/.gitignore
+    // should not delete files from ignore, but leave them as untracked in the working tree
+    await checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: 'test-branch',
+    })
+    const files = await fs.readdir(`${dir}/ignored`)
+    expect(files).toContain('regular-file.txt')
+    expect(files).not.toContain('.gitignore')
+  })
+
+  it('checkout a branch named after a git system file keeps HEAD attached', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await branch({ fs, dir, gitdir, ref: 'index', checkout: false })
+    // Test
+    await checkout({ fs, dir, gitdir, ref: 'index' })
+    // Every repository has a `.git/index`, and checkout asks GitRefManager to
+    // expand the ref before deciding whether it is a branch. When the expansion
+    // returns the index file instead of refs/heads/index, checkout concludes it
+    // is not a branch and detaches HEAD, so later commits belong to no branch.
+    expect(await currentBranch({ fs, dir, gitdir })).toEqual('index')
+    expect(await fs.read(path.join(gitdir, 'HEAD'), 'utf8')).toEqual(
+      'ref: refs/heads/index\n'
+    )
+  })
+
+  it('writes .git/index once when refreshing the stat info of many files', async () => {
+    // Setup
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await checkout({ fs, dir, gitdir, ref: 'test-branch' })
+    // Blank the stat info of some unmodified files in the index, so the
+    // stat-cache refresh fires for each of them while checkout analyzes the
+    // working tree. Anything that touches tracked files without changing
+    // them (`touch`, copying the working tree) does the same.
+    const filepaths = ['README.md', 'package.json', 'src/index.js']
+    for (const filepath of filepaths) {
+      const object = await fs.read(path.join(dir, filepath))
+      const { oid } = await hashBlob({ object })
+      await updateIndex({ fs, dir, gitdir, filepath, oid })
+    }
+    // Count the writes to the index file
+    let indexWrites = 0
+    const write = fs.write.bind(fs)
+    fs.write = (filepath, ...args) => {
+      if (filepath === `${gitdir}/index`) indexWrites++
+      return write(filepath, ...args)
+    }
+    // Test
+    await checkout({ fs, dir, gitdir, ref: 'test-branch', force: true })
+    // One write for the whole analysis, not one per file
+    expect(indexWrites).toBe(1)
+    // The stat info is up to date now, so there is nothing left to write
+    const matrix = await statusMatrix({ fs, dir, gitdir, filepaths })
+    expect(matrix).toEqual([
+      ['README.md', 1, 1, 1],
+      ['package.json', 1, 1, 1],
+      ['src/index.js', 1, 1, 1],
+    ])
+    expect(indexWrites).toBe(1)
   })
 })

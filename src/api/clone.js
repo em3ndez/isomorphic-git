@@ -4,6 +4,7 @@ import '../typedefs.js'
 import { _clone } from '../commands/clone.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 
 /**
@@ -17,6 +18,7 @@ import { join } from '../utils/join.js'
  * @param {AuthCallback} [args.onAuth] - optional auth fill callback
  * @param {AuthFailureCallback} [args.onAuthFailure] - optional auth rejected callback
  * @param {AuthSuccessCallback} [args.onAuthSuccess] - optional auth approved callback
+ * @param {PostCheckoutCallback} [args.onPostCheckout] - optional post-checkout hook callback
  * @param {string} args.dir - The [working tree](dir-vs-gitdir.md) directory path
  * @param {string} [args.gitdir=join(dir,'.git')] - [required] The [git directory](dir-vs-gitdir.md) path
  * @param {string} args.url - The URL of the remote repository
@@ -32,6 +34,8 @@ import { join } from '../utils/join.js'
  * @param {boolean} [args.relative = false] - Changes the meaning of `depth` to be measured from the current shallow depth rather than from the branch tip.
  * @param {Object<string, string>} [args.headers = {}] - Additional headers to include in HTTP requests, similar to git's `extraHeader` config
  * @param {object} [args.cache] - a [cache](cache.md) object
+ * @param {boolean} [args.nonBlocking = false] - if true, checkout will happen non-blockingly (useful for long-running operations blocking the thread in browser environments)
+ * @param {number} [args.batchSize = 100] - If args.nonBlocking is true, batchSize is the number of files to process at a time avoid blocking the executing thread. The default value of 100 is a good starting point.
  *
  * @returns {Promise<void>} Resolves successfully when clone completes
  *
@@ -56,6 +60,7 @@ export async function clone({
   onAuth,
   onAuthSuccess,
   onAuthFailure,
+  onPostCheckout,
   dir,
   gitdir = join(dir, '.git'),
   url,
@@ -71,6 +76,8 @@ export async function clone({
   noTags = false,
   headers = {},
   cache = {},
+  nonBlocking = false,
+  batchSize = 100,
 }) {
   try {
     assertParameter('fs', fs)
@@ -81,8 +88,10 @@ export async function clone({
     }
     assertParameter('url', url)
 
+    const fsp = new FileSystem(fs)
+    const updatedGitdir = await discoverGitdir({ fsp, dotgit: gitdir })
     return await _clone({
-      fs: new FileSystem(fs),
+      fs: fsp,
       cache,
       http,
       onProgress,
@@ -90,8 +99,9 @@ export async function clone({
       onAuth,
       onAuthSuccess,
       onAuthFailure,
+      onPostCheckout,
       dir,
-      gitdir,
+      gitdir: updatedGitdir,
       url,
       corsProxy,
       ref,
@@ -104,6 +114,8 @@ export async function clone({
       noCheckout,
       noTags,
       headers,
+      nonBlocking,
+      batchSize,
     })
   } catch (err) {
     err.caller = 'git.clone'

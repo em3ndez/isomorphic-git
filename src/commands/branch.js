@@ -6,6 +6,8 @@ import cleanGitRef from 'clean-git-ref'
 import { AlreadyExistsError } from '../errors/AlreadyExistsError.js'
 import { InvalidRefNameError } from '../errors/InvalidRefNameError.js'
 import { GitRefManager } from '../managers/GitRefManager.js'
+import validRef from '../utils/isValidRef.js'
+import { resolveCommit } from '../utils/resolveCommit.js'
 
 /**
  * Create a branch
@@ -33,7 +35,7 @@ export async function _branch({
   checkout = false,
   force = false,
 }) {
-  if (ref !== cleanGitRef.clean(ref)) {
+  if (!validRef(ref, true)) {
     throw new InvalidRefNameError(ref, cleanGitRef.clean(ref))
   }
 
@@ -54,8 +56,10 @@ export async function _branch({
     // Probably an empty repo
   }
 
-  // Create a new ref that points at the current commit
+  // Create a new ref that points at the current commit,
+  // peeling annotated tags to the commit they point to
   if (oid) {
+    oid = (await resolveCommit({ fs, cache: {}, gitdir, oid })).oid
     await GitRefManager.writeRef({ fs, gitdir, ref: fullref, value: oid })
   }
 

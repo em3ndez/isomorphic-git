@@ -1,7 +1,6 @@
 /* eslint-env node, browser, jasmine */
+import { listServerRefs } from 'isomorphic-git'
 import http from 'isomorphic-git/http'
-
-const { listServerRefs } = require('isomorphic-git')
 
 // this is so it works with either Node local tests or Browser WAN tests
 const localhost =
@@ -10,7 +9,7 @@ const localhost =
 // NOTE:
 // Protocol Version 1 is incapable of reporting all the symrefs in a repo
 // It reports HEAD but does not report refs/heads/symbol.
-// So that descrepancy between the results for version 1 and version 2 is correct.
+// So that discrepancy between the results for version 1 and version 2 is correct.
 describe('listServerRefs', () => {
   it('protocol 1', async () => {
     const refs = await listServerRefs({
@@ -19,24 +18,24 @@ describe('listServerRefs', () => {
       protocolVersion: 1,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "HEAD",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "ref": "refs/tags/test",
         },
@@ -52,25 +51,25 @@ describe('listServerRefs', () => {
       symrefs: true,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "HEAD",
           "target": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "ref": "refs/tags/test",
         },
@@ -86,24 +85,24 @@ describe('listServerRefs', () => {
       peelTags: true,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "HEAD",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "peeled": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/tags/test",
@@ -120,16 +119,16 @@ describe('listServerRefs', () => {
       prefix: 'refs/heads',
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
@@ -147,20 +146,20 @@ describe('listServerRefs', () => {
       peelTags: true,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "peeled": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/tags/test",
@@ -176,24 +175,24 @@ describe('listServerRefs', () => {
       protocolVersion: 2,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "HEAD",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "ref": "refs/tags/test",
         },
@@ -209,26 +208,26 @@ describe('listServerRefs', () => {
       symrefs: true,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "HEAD",
           "target": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
           "target": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "ref": "refs/tags/test",
         },
@@ -244,24 +243,24 @@ describe('listServerRefs', () => {
       peelTags: true,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "HEAD",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "peeled": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/tags/test",
@@ -278,16 +277,16 @@ describe('listServerRefs', () => {
       prefix: 'refs/heads',
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
@@ -305,21 +304,21 @@ describe('listServerRefs', () => {
       peelTags: true,
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/heads/symbol",
           "target": "refs/heads/master",
         },
-        Object {
+        {
           "oid": "5a8905a02e181fe1821068b8c0f48cb6633d5b81",
           "ref": "refs/heads/test",
         },
-        Object {
+        {
           "oid": "48424d105c9eac701cd734a0032fcc71505797e6",
           "peeled": "97c024f73eaab2781bf3691597bc7c833cb0e22f",
           "ref": "refs/tags/test",

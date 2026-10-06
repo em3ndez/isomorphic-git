@@ -4,6 +4,7 @@ import '../typedefs.js'
 import { _checkout } from '../commands/checkout.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 
 /**
@@ -14,10 +15,11 @@ import { join } from '../utils/join.js'
  * @param {object} args
  * @param {FsClient} args.fs - a file system implementation
  * @param {ProgressCallback} [args.onProgress] - optional progress event callback
+ * @param {PostCheckoutCallback} [args.onPostCheckout] - optional post-checkout hook callback
  * @param {string} args.dir - The [working tree](dir-vs-gitdir.md) directory path
  * @param {string} [args.gitdir=join(dir,'.git')] - [required] The [git directory](dir-vs-gitdir.md) path
  * @param {string} [args.ref = 'HEAD'] - Source to checkout files from
- * @param {string[]} [args.filepaths] - Limit the checkout to the given files and directories
+ * @param {string[]} [args.filepaths] - Limit the checkout to the given files and directories. If `ref` is not provided, restore them from the index.
  * @param {string} [args.remote = 'origin'] - Which remote repository to use
  * @param {boolean} [args.noCheckout = false] - If true, will update HEAD but won't update the working directory
  * @param {boolean} [args.noUpdateHead] - If true, will update the working directory but won't update HEAD. Defaults to `false` when `ref` is provided, and `true` if `ref` is not provided.
@@ -25,6 +27,8 @@ import { join } from '../utils/join.js'
  * @param {boolean} [args.force = false] - If true, conflicts will be ignored and files will be overwritten regardless of local changes.
  * @param {boolean} [args.track = true] - If false, will not set the remote branch tracking information. Defaults to true.
  * @param {object} [args.cache] - a [cache](cache.md) object
+ * @param {boolean} [args.nonBlocking = false] - If true, will use non-blocking file system operations to allow for better performance in certain environments (For example, in Browsers)
+ * @param {number} [args.batchSize = 100] - If args.nonBlocking is true, batchSize is the number of files to process at a time avoid blocking the executing thread. The default value of 100 is a good starting point.
  *
  * @returns {Promise<void>} Resolves successfully when filesystem operations are complete
  *
@@ -38,7 +42,7 @@ import { join } from '../utils/join.js'
  * console.log('done')
  *
  * @example
- * // restore the 'docs' and 'src/docs' folders to the way they were, overwriting any changes
+ * // restore the 'docs' and 'src/docs' folders from the index, overwriting any unstaged changes
  * await git.checkout({
  *   fs,
  *   dir: '/tutorial',
@@ -62,6 +66,7 @@ import { join } from '../utils/join.js'
 export async function checkout({
   fs,
   onProgress,
+  onPostCheckout,
   dir,
   gitdir = join(dir, '.git'),
   remote = 'origin',
@@ -73,6 +78,8 @@ export async function checkout({
   force = false,
   track = true,
   cache = {},
+  nonBlocking = false,
+  batchSize = 100,
 }) {
   try {
     assertParameter('fs', fs)
@@ -80,12 +87,17 @@ export async function checkout({
     assertParameter('gitdir', gitdir)
 
     const ref = _ref || 'HEAD'
+    const restoreFromIndex =
+      _ref === undefined && filepaths != null && filepaths.length > 0
+    const fsp = new FileSystem(fs)
+    const updatedGitdir = await discoverGitdir({ fsp, dotgit: gitdir })
     return await _checkout({
-      fs: new FileSystem(fs),
+      fs: fsp,
       cache,
       onProgress,
+      onPostCheckout,
       dir,
-      gitdir,
+      gitdir: updatedGitdir,
       remote,
       ref,
       filepaths,
@@ -94,6 +106,9 @@ export async function checkout({
       dryRun,
       force,
       track,
+      restoreFromIndex,
+      nonBlocking,
+      batchSize,
     })
   } catch (err) {
     err.caller = 'git.checkout'

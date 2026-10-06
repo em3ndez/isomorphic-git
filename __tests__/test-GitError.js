@@ -1,6 +1,6 @@
 /* eslint-env node, browser, jasmine */
 
-const { Errors } = require('isomorphic-git')
+import { Errors } from 'isomorphic-git'
 
 describe('Errors', () => {
   it('have the correct value for their static property code', async () => {
@@ -23,14 +23,25 @@ describe('Errors', () => {
     e = e.toJSON()
     delete e.stack
     expect(e).toMatchInlineSnapshot(`
-      Object {
+      {
         "caller": "",
         "code": "NotFoundError",
-        "data": Object {
+        "data": {
           "what": "foobar.txt",
         },
         "message": "Could not find foobar.txt.",
       }
     `)
+  })
+  it('create an InternalError with actionable reporting guidance', async () => {
+    const e = new Errors.InternalError('Something unexpected happened.')
+
+    expect(e.message).toContain(
+      "If you're using an application that depends on isomorphic-git"
+    )
+    expect(e.message).toContain(
+      "If you're a developer and you believe this is a bug in isomorphic-git"
+    )
+    expect(e.message).toContain('Something unexpected happened.')
   })
 })

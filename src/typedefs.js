@@ -7,6 +7,7 @@ import './typedefs-http.js'
  * @property {string} message Commit message
  * @property {string} tree SHA-1 object id of corresponding file tree
  * @property {string[]} parent an array of zero or more SHA-1 object ids
+ * @property {Array.<Array.<string|null>>} [changes] Changed files as `[newOid, oldOid, filepath]`; present when `log` is called with `includeChanges: true`.
  * @property {Object} author
  * @property {string} author.name The author's name
  * @property {string} author.email The author's email
@@ -249,4 +250,42 @@ import './typedefs-http.js'
 
 /**
  * @typedef {[string, HeadStatus, WorkdirStatus, StageStatus]} StatusRow
+ */
+
+/**
+ * @typedef {'push' | 'pop' | 'apply' | 'drop' | 'list' | 'clear'} StashOp the type of stash ops
+ */
+
+/**
+ * @typedef {'equal' | 'modify' | 'add' | 'remove' | 'unknown'} StashChangeType - when compare WORDIR to HEAD, 'remove' could mean 'untracked'
+ * @typedef {Object} ClientRef
+ * @property {string} ref The name of the ref
+ * @property {string} oid The SHA-1 object id the ref points to
+ */
+
+/**
+ * @typedef {Object} PrePushParams
+ * @property {string} remote The expanded name of target remote
+ * @property {string} url The URL address of target remote
+ * @property {ClientRef} localRef The ref which the client wants to push to the remote
+ * @property {ClientRef} remoteRef The ref which is known by the remote
+ */
+
+/**
+ * @callback PrePushCallback
+ * @param {PrePushParams} args
+ * @returns {boolean | Promise<boolean>} Returns false if push must be cancelled
+ */
+
+/**
+ * @typedef {Object} PostCheckoutParams
+ * @property {string} previousHead The SHA-1 object id of HEAD before checkout
+ * @property {string} newHead The SHA-1 object id of HEAD after checkout
+ * @property {'branch' | 'file'} type flag determining whether a branch or a set of files was checked
+ */
+
+/**
+ * @callback PostCheckoutCallback
+ * @param {PostCheckoutParams} args
+ * @returns {void | Promise<void>}
  */

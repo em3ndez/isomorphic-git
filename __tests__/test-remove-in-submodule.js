@@ -1,0 +1,151 @@
+/* eslint-env node, browser, jasmine */
+import { remove, listFiles } from 'isomorphic-git'
+
+import { makeFixtureAsSubmodule } from './__helpers__/FixtureFSSubmodule.js'
+
+describe('remove', () => {
+  it('file', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixtureAsSubmodule('test-remove')
+    // Test
+    const before = await listFiles({ fs, gitdir })
+    expect(before).toMatchInlineSnapshot(`
+      [
+        ".babelrc",
+        ".editorconfig",
+        ".flowconfig",
+        ".gitignore",
+        ".travis.yml",
+        "LICENSE.md",
+        "package-lock.json",
+        "package.json",
+        "shrinkwrap.yaml",
+        "src/commands/checkout.js",
+        "src/commands/config.js",
+        "src/commands/fetch.js",
+        "src/commands/init.js",
+        "src/index.js",
+        "src/models/GitBlob.js",
+        "src/models/GitCommit.js",
+        "src/models/GitConfig.js",
+        "src/models/GitObject.js",
+        "src/models/GitTree.js",
+        "src/utils/exists.js",
+        "src/utils/mkdirs.js",
+        "src/utils/read.js",
+        "src/utils/resolveRef.js",
+        "src/utils/write.js",
+      ]
+    `)
+    await remove({ fs, gitdir, filepath: 'LICENSE.md' })
+    const after = await listFiles({ fs, gitdir })
+    expect(after).toMatchInlineSnapshot(`
+      [
+        ".babelrc",
+        ".editorconfig",
+        ".flowconfig",
+        ".gitignore",
+        ".travis.yml",
+        "package-lock.json",
+        "package.json",
+        "shrinkwrap.yaml",
+        "src/commands/checkout.js",
+        "src/commands/config.js",
+        "src/commands/fetch.js",
+        "src/commands/init.js",
+        "src/index.js",
+        "src/models/GitBlob.js",
+        "src/models/GitCommit.js",
+        "src/models/GitConfig.js",
+        "src/models/GitObject.js",
+        "src/models/GitTree.js",
+        "src/utils/exists.js",
+        "src/utils/mkdirs.js",
+        "src/utils/read.js",
+        "src/utils/resolveRef.js",
+        "src/utils/write.js",
+      ]
+    `)
+    expect(before.length === after.length + 1).toBe(true)
+  })
+  it('dir', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixtureAsSubmodule('test-remove')
+    // Test
+    const before = await listFiles({ fs, gitdir })
+    expect(before).toMatchInlineSnapshot(`
+      [
+        ".babelrc",
+        ".editorconfig",
+        ".flowconfig",
+        ".gitignore",
+        ".travis.yml",
+        "LICENSE.md",
+        "package-lock.json",
+        "package.json",
+        "shrinkwrap.yaml",
+        "src/commands/checkout.js",
+        "src/commands/config.js",
+        "src/commands/fetch.js",
+        "src/commands/init.js",
+        "src/index.js",
+        "src/models/GitBlob.js",
+        "src/models/GitCommit.js",
+        "src/models/GitConfig.js",
+        "src/models/GitObject.js",
+        "src/models/GitTree.js",
+        "src/utils/exists.js",
+        "src/utils/mkdirs.js",
+        "src/utils/read.js",
+        "src/utils/resolveRef.js",
+        "src/utils/write.js",
+      ]
+    `)
+    await remove({ fs, gitdir, filepath: 'src/models' })
+    const after = await listFiles({ fs, gitdir })
+    expect(after).toMatchInlineSnapshot(`
+      [
+        ".babelrc",
+        ".editorconfig",
+        ".flowconfig",
+        ".gitignore",
+        ".travis.yml",
+        "LICENSE.md",
+        "package-lock.json",
+        "package.json",
+        "shrinkwrap.yaml",
+        "src/commands/checkout.js",
+        "src/commands/config.js",
+        "src/commands/fetch.js",
+        "src/commands/init.js",
+        "src/index.js",
+        "src/utils/exists.js",
+        "src/utils/mkdirs.js",
+        "src/utils/read.js",
+        "src/utils/resolveRef.js",
+        "src/utils/write.js",
+      ]
+    `)
+    expect(before.length === after.length + 5).toBe(true)
+  })
+  it('files', async () => {
+    // Setup
+    const { fs, gitdir, gitdirsmfullpath } =
+      await makeFixtureAsSubmodule('test-remove')
+    // Count the writes to the index file
+    let indexWrites = 0
+    const write = fs.write.bind(fs)
+    fs.write = (filepath, ...args) => {
+      if (filepath === `${gitdirsmfullpath}/index`) indexWrites++
+      return write(filepath, ...args)
+    }
+    // Test
+    const before = await listFiles({ fs, gitdir })
+    await remove({ fs, gitdir, filepath: ['LICENSE.md', 'package.json'] })
+    const after = await listFiles({ fs, gitdir })
+    expect(after).toEqual(
+      before.filter(f => f !== 'LICENSE.md' && f !== 'package.json')
+    )
+    expect(indexWrites).toBe(1)
+  })
+})

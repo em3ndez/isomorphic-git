@@ -1,7 +1,7 @@
 /* eslint-env node, browser, jasmine */
-const { findMergeBase } = require('isomorphic-git')
+import { findMergeBase, writeCommit, writeTree } from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 // These have been checked with
 // GIT_DIR=__tests__/__fixtures__/test-findMergeBase.git git merge-base -a --octopus COMMITS
@@ -41,6 +41,18 @@ describe('findMergeBase', () => {
       ],
     })
     expect(base).toEqual([])
+  })
+  it('rejects an oid that cannot be read', async () => {
+    const { fs, gitdir } = await makeFixture('test-findMergeBase')
+    const oid = '0000000000000000000000000000000000000000'
+    const tree = await writeTree({ fs, gitdir, tree: [] })
+
+    await expect(
+      findMergeBase({ fs, gitdir, oids: [oid, oid] })
+    ).rejects.toThrow()
+    await expect(
+      findMergeBase({ fs, gitdir, oids: [tree, tree] })
+    ).rejects.toThrow()
   })
   it('fast-forward scenarios', async () => {
     // Setup
@@ -87,6 +99,33 @@ describe('findMergeBase', () => {
       ],
     })
     expect(base).toEqual(['f79577b91d302d87e310c8b5af8c274bbf45502f'])
+  })
+  it('does not prefer a closer but older common ancestor', async () => {
+    const { fs, gitdir } = await makeFixture('test-findMergeBase')
+    const tree = await writeTree({ fs, gitdir, tree: [] })
+    const author = {
+      name: 'Test Author',
+      email: 'test@example.com',
+      timestamp: 1502484200,
+      timezoneOffset: 0,
+    }
+    const commit = (message, parent) =>
+      writeCommit({
+        fs,
+        gitdir,
+        commit: { author, committer: author, message, parent, tree },
+      })
+
+    const e = await commit('E', [])
+    const f = await commit('F', [e])
+    const d = await commit('D', [e])
+    const c = await commit('C', [d])
+    const b = await commit('B', [c])
+    const a = await commit('A', [b])
+    const head = await commit('HEAD', [a, f])
+
+    const base = await findMergeBase({ fs, gitdir, oids: [head, c] })
+    expect(base).toEqual([c])
   })
   it('diverging scenarios', async () => {
     // Setup

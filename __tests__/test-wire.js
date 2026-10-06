@@ -1,5 +1,5 @@
 /* eslint-env node, browser, jasmine */
-const {
+import {
   collect,
   parseRefsAdResponse,
   parseUploadPackResponse,
@@ -7,7 +7,7 @@ const {
   writeRefsAdResponse,
   writeUploadPackRequest,
   Errors,
-} = require('isomorphic-git/internal-apis')
+} from 'isomorphic-git/internal-apis'
 // const stream = require('stream')
 
 /*
@@ -170,6 +170,35 @@ describe('git wire protocol', () => {
       ['refs/heads/master4', '18f4b62440abf61285fbfdcbfd990ab8434ff35c'],
       ['refs/heads/master5', 'e5c144897b64a44bd1164a0db60738452c9eaf87'],
     ])
+  })
+  it('parseRefsAdResponse empty repo with capabilities', async () => {
+    const res = [
+      Buffer.from(`001e# service=git-upload-pack
+000000fa0000000000000000000000000000000000000000 capabilities^{}\0multi_ack thin-pack side-band side-band-64k ofs-delta shallow deepen-since deepen-not deepen-relative no-progress include-tag multi_ack_detailed no-done object-format=sha1 agent=git/2.43.0
+0000`),
+    ]
+    const result = await parseRefsAdResponse(res, {
+      service: 'git-upload-pack',
+    })
+    expect([...result.capabilities]).toEqual([
+      'multi_ack',
+      'thin-pack',
+      'side-band',
+      'side-band-64k',
+      'ofs-delta',
+      'shallow',
+      'deepen-since',
+      'deepen-not',
+      'deepen-relative',
+      'no-progress',
+      'include-tag',
+      'multi_ack_detailed',
+      'no-done',
+      'object-format=sha1',
+      'agent=git/2.43.0',
+    ])
+    expect([...result.symrefs]).toEqual([])
+    expect([...result.refs]).toEqual([])
   })
   it('parseRefsAdResponse bad service', async () => {
     const res = [

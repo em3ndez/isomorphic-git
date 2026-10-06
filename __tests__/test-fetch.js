@@ -1,16 +1,77 @@
 /* eslint-env node, browser, jasmine */
+import { Errors, setConfig, fetch } from 'isomorphic-git'
 import http from 'isomorphic-git/http'
+import { sleep } from 'isomorphic-git/internal-apis'
 
-const { Errors, setConfig, fetch } = require('isomorphic-git')
-const { sleep } = require('isomorphic-git/internal-apis')
-
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 // this is so it works with either Node local tests or Browser WAN tests
 const localhost =
   typeof window === 'undefined' ? '127.0.0.1' : window.location.hostname
 
 describe('fetch', () => {
+  it('passes credential config username to onAuth', async () => {
+    const { fs, gitdir } = await makeFixture('test-fetch-cors')
+    const url = 'https://example.com/repo.git'
+    await setConfig({
+      fs,
+      gitdir,
+      path: 'remote.origin.url',
+      value: url,
+    })
+    await setConfig({
+      fs,
+      gitdir,
+      path: `credential.${url}.username`,
+      value: 'alice',
+    })
+    const requests = []
+    const onAuthArgs = []
+    const emptyBody = async function* () {}
+    const mockHttp = {
+      request: async request => {
+        requests.push(request)
+        return requests.length === 1
+          ? {
+              url: request.url,
+              statusCode: 401,
+              statusMessage: 'Unauthorized',
+              headers: {},
+              body: emptyBody(),
+            }
+          : {
+              url: request.url,
+              statusCode: 403,
+              statusMessage: 'Forbidden',
+              headers: {},
+              body: emptyBody(),
+            }
+      },
+    }
+
+    let err
+    try {
+      await fetch({
+        fs,
+        http: mockHttp,
+        gitdir,
+        remote: 'origin',
+        ref: 'master',
+        singleBranch: true,
+        onAuth: (authUrl, auth) => {
+          onAuthArgs.push([authUrl, auth])
+          return { ...auth, password: 'secret' }
+        },
+      })
+    } catch (e) {
+      err = e
+    }
+
+    expect(err).toBeDefined()
+    expect(err.code).toEqual(Errors.HttpError.code)
+    expect(onAuthArgs).toEqual([[url, { username: 'alice', headers: {} }]])
+  })
+
   it('fetch (from Github)', async () => {
     const { fs, gitdir } = await makeFixture('test-fetch-cors')
     await setConfig({

@@ -8,6 +8,7 @@ import { _walk } from '../commands/walk.js'
 import { GitIgnoreManager } from '../managers/GitIgnoreManager.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 import { worthWalking } from '../utils/worthWalking.js'
 
@@ -57,6 +58,8 @@ import { worthWalking } from '../utils/worthWalking.js'
  *   ["g.txt", 1, 2, 3], // modified, staged, with unstaged changes
  *   ["h.txt", 1, 0, 1], // deleted, unstaged
  *   ["i.txt", 1, 0, 0], // deleted, staged
+ *   ["j.txt", 1, 2, 0], // deleted, staged, with unstaged-modified changes (new file of the same name)
+ *   ["k.txt", 1, 1, 0], // deleted, staged, with unstaged changes (new file of the same name)
  * ]
  * ```
  *
@@ -148,6 +151,11 @@ import { worthWalking } from '../utils/worthWalking.js'
  * @param {function(string): boolean} [args.filter] - Filter the results to only those whose filepath matches a function.
  * @param {object} [args.cache] - a [cache](cache.md) object
  * @param {boolean} [args.ignored = false] - include ignored files in the result
+ * @param {boolean} [args.refresh = true] - when false, do not refresh the
+ *   `.git/index` stat cache for files whose contents still match the staged
+ *   blob. The call becomes read-only with respect to the index, at the cost
+ *   of recomputing the SHA1 on subsequent calls for files whose stat info
+ *   has drifted.
  *
  * @returns {Promise<Array<StatusRow>>} Resolves with a status matrix, described below.
  * @see StatusRow
@@ -161,6 +169,7 @@ export async function statusMatrix({
   filter,
   cache = {},
   ignored: shouldIgnore = false,
+  refresh = true,
 }) {
   try {
     assertParameter('fs', _fs)
@@ -168,13 +177,14 @@ export async function statusMatrix({
     assertParameter('ref', ref)
 
     const fs = new FileSystem(_fs)
+    const updatedGitdir = await discoverGitdir({ fsp: fs, dotgit: gitdir })
     return await _walk({
       fs,
       cache,
       dir,
-      gitdir,
-      trees: [TREE({ ref }), WORKDIR(), STAGE()],
-      map: async function(filepath, [head, workdir, stage]) {
+      gitdir: updatedGitdir,
+      trees: [TREE({ ref }), WORKDIR({ refresh }), STAGE()],
+      map: async function (filepath, [head, workdir, stage]) {
         // Ignore ignored files, but only if they are not already tracked.
         if (!head && !stage && workdir) {
           if (!shouldIgnore) {

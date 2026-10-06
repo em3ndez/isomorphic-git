@@ -4,6 +4,7 @@ import '../typedefs.js'
 import { _push } from '../commands/push.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
 import { join } from '../utils/join.js'
 
 /**
@@ -25,9 +26,10 @@ import { join } from '../utils/join.js'
  * @param {AuthCallback} [args.onAuth] - optional auth fill callback
  * @param {AuthFailureCallback} [args.onAuthFailure] - optional auth rejected callback
  * @param {AuthSuccessCallback} [args.onAuthSuccess] - optional auth approved callback
+ * @param {PrePushCallback} [args.onPrePush] - optional pre-push hook callback
  * @param {string} [args.dir] - The [working tree](dir-vs-gitdir.md) directory path
  * @param {string} [args.gitdir=join(dir,'.git')] - [required] The [git directory](dir-vs-gitdir.md) path
- * @param {string} [args.ref] - Which branch to push. By default this is the currently checked out branch.
+ * @param {string} [args.ref] - Which branch or tag to push. By default this is the currently checked out branch.
  * @param {string} [args.url] - The URL of the remote repository. The default is the value set in the git config for that remote.
  * @param {string} [args.remote] - If URL is not specified, determines which remote to use.
  * @param {string} [args.remoteRef] - The name of the receiving branch on the remote. By default this is the configured remote tracking branch.
@@ -36,6 +38,7 @@ import { join } from '../utils/join.js'
  * @param {string} [args.corsProxy] - Optional [CORS proxy](https://www.npmjs.com/%40isomorphic-git/cors-proxy). Overrides value in repo config.
  * @param {Object<string, string>} [args.headers] - Additional headers to include in HTTP requests, similar to git's `extraHeader` config
  * @param {object} [args.cache] - a [cache](cache.md) object
+ * @param {AbortSignal} [args.signal] - Optional signal to abort the push operation
  *
  * @returns {Promise<PushResult>} Resolves successfully when push completes with a detailed description of the operation from the server.
  * @see PushResult
@@ -61,6 +64,7 @@ export async function push({
   onAuth,
   onAuthSuccess,
   onAuthFailure,
+  onPrePush,
   dir,
   gitdir = join(dir, '.git'),
   ref,
@@ -72,14 +76,17 @@ export async function push({
   corsProxy,
   headers = {},
   cache = {},
+  signal,
 }) {
   try {
     assertParameter('fs', fs)
     assertParameter('http', http)
     assertParameter('gitdir', gitdir)
 
+    const fsp = new FileSystem(fs)
+    const updatedGitdir = await discoverGitdir({ fsp, dotgit: gitdir })
     return await _push({
-      fs: new FileSystem(fs),
+      fs: fsp,
       cache,
       http,
       onProgress,
@@ -87,7 +94,8 @@ export async function push({
       onAuth,
       onAuthSuccess,
       onAuthFailure,
-      gitdir,
+      onPrePush,
+      gitdir: updatedGitdir,
       ref,
       remoteRef,
       remote,
@@ -96,6 +104,7 @@ export async function push({
       delete: _delete,
       corsProxy,
       headers,
+      signal,
     })
   } catch (err) {
     err.caller = 'git.push'

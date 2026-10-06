@@ -1,17 +1,25 @@
+import { GitConfigManager } from '../managers/GitConfigManager.js'
 import { GitIndexManager } from '../managers/GitIndexManager.js'
 import { compareStats } from '../utils/compareStats.js'
-import { join } from '../utils/join'
+import { join } from '../utils/join.js'
 import { normalizeStats } from '../utils/normalizeStats.js'
 import { shasum } from '../utils/shasum.js'
 
 import { GitObject } from './GitObject.js'
 
 export class GitWalkerFs {
-  constructor({ fs, dir, gitdir, cache }) {
+  constructor({ fs, dir, gitdir, cache, refresh = true }) {
     this.fs = fs
     this.cache = cache
     this.dir = dir
     this.gitdir = gitdir
+    this.refresh = refresh
+    // Index entries whose stat info needs a refresh. `flush` writes them to
+    // the index together when the walk is finished.
+    this.refreshQueue = []
+    this.flushed = false
+
+    this.config = null
     const walker = this
     this.ConstructEntry = class WorkdirEntry {
       constructor(fullpath) {
@@ -46,6 +54,7 @@ export class GitWalkerFs {
   }
 
   async readdir(entry) {
+    if ((await entry.type()) !== 'tree') return null
     const filepath = entry._fullpath
     const { fs, dir } = this
     const names = await fs.readdir(join(dir, filepath))
@@ -94,11 +103,18 @@ export class GitWalkerFs {
 
   async content(entry) {
     if (entry._content === false) {
-      const { fs, dir } = this
+      const { fs, dir, gitdir } = this
       if ((await entry.type()) === 'tree') {
         entry._content = undefined
       } else {
-        const content = await fs.read(`${dir}/${entry._fullpath}`)
+        let content
+        if ((await entry.mode()) >> 12 === 0b1010) {
+          content = await fs.readlink(`${dir}/${entry._fullpath}`)
+        } else {
+          const config = await this._getGitConfig(fs, gitdir)
+          const autocrlf = await config.get('core.autocrlf')
+          content = await fs.read(`${dir}/${entry._fullpath}`, { autocrlf })
+        }
         // workaround for a BrowserFS edge case
         entry._actualSize = content.length
         if (entry._stat && entry._stat.size === -1) {
@@ -112,45 +128,92 @@ export class GitWalkerFs {
 
   async oid(entry) {
     if (entry._oid === false) {
+      const self = this
       const { fs, gitdir, cache } = this
       let oid
       // See if we can use the SHA1 hash in the index.
-      await GitIndexManager.acquire({ fs, gitdir, cache }, async function(
-        index
-      ) {
-        const stage = index.entriesMap.get(entry._fullpath)
-        const stats = await entry.stat()
-        if (!stage || compareStats(stats, stage)) {
-          const content = await entry.content()
-          if (content === undefined) {
-            oid = undefined
-          } else {
-            oid = await shasum(
-              GitObject.wrap({ type: 'blob', object: await entry.content() })
-            )
-            // Update the stats in the index so we will get a "cache hit" next time
-            // 1) if we can (because the oid and mode are the same)
-            // 2) and only if we need to (because other stats differ)
-            if (
-              stage &&
-              oid === stage.oid &&
-              stats.mode === stage.mode &&
-              compareStats(stats, stage)
-            ) {
-              index.insert({
-                filepath: entry._fullpath,
-                stats,
-                oid: oid,
-              })
+      await GitIndexManager.acquire(
+        { fs, gitdir, cache },
+        async function (index) {
+          const stage = index.entriesMap.get(entry._fullpath)
+          const stats = await entry.stat()
+          const config = await self._getGitConfig(fs, gitdir)
+          const filemode = await config.get('core.filemode')
+          const trustino =
+            typeof process !== 'undefined'
+              ? !(process.platform === 'win32')
+              : true
+          if (!stage || compareStats(stats, stage, filemode, trustino)) {
+            const content = await entry.content()
+            if (content === undefined) {
+              oid = undefined
+            } else {
+              oid = await shasum(
+                GitObject.wrap({ type: 'blob', object: content })
+              )
+              // Update the stats in the index so we will get a "cache hit" next time
+              // 1) if we can (because the oid and mode are the same)
+              // 2) and only if we need to (because other stats differ)
+              // 3) and only if the caller opted in to refreshing the index
+              if (
+                self.refresh &&
+                stage &&
+                oid === stage.oid &&
+                (!filemode || stats.mode === stage.mode) &&
+                compareStats(stats, stage, filemode, trustino)
+              ) {
+                if (self.flushed) {
+                  // The walk is finished and `flush` already ran, so write
+                  // it right away.
+                  index.insert({ filepath: entry._fullpath, stats, oid })
+                } else {
+                  // Queue the refresh so `flush` can write all of them to the
+                  // index in one go when the walk is finished.
+                  self.refreshQueue.push({
+                    filepath: entry._fullpath,
+                    stage,
+                    stats,
+                    oid,
+                  })
+                }
+              }
             }
+          } else {
+            // Use the index SHA1 rather than compute it
+            oid = stage.oid
           }
-        } else {
-          // Use the index SHA1 rather than compute it
-          oid = stage.oid
         }
-      })
+      )
       entry._oid = oid
     }
     return entry._oid
+  }
+
+  /**
+   * Write the queued stat refreshes to the index in a single pass.
+   * `_walk` calls this once the walk is finished. The entries it returned
+   * can still be asked for their oid afterwards, so from then on `oid`
+   * writes a refresh right away instead of queueing it.
+   */
+  async flush() {
+    const { fs, gitdir, cache, refreshQueue } = this
+    this.refreshQueue = []
+    this.flushed = true
+    if (refreshQueue.length === 0) return
+    await GitIndexManager.acquire({ fs, gitdir, cache }, async index => {
+      for (const { filepath, stage, stats, oid } of refreshQueue) {
+        // Only refresh entries that are still the ones we looked at.
+        if (index.entriesMap.get(filepath) !== stage) continue
+        index.insert({ filepath, stats, oid })
+      }
+    })
+  }
+
+  async _getGitConfig(fs, gitdir) {
+    if (this.config) {
+      return this.config
+    }
+    this.config = await GitConfigManager.get({ fs, gitdir })
+    return this.config
   }
 }

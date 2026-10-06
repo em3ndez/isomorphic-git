@@ -11,10 +11,12 @@ import { GitPushError } from '../errors/GitPushError.js'
 import { MissingParameterError } from '../errors/MissingParameterError.js'
 import { NotFoundError } from '../errors/NotFoundError.js'
 import { PushRejectedError } from '../errors/PushRejectedError.js'
+import { UserCanceledError } from '../errors/UserCanceledError.js'
 import { GitConfigManager } from '../managers/GitConfigManager.js'
 import { GitRefManager } from '../managers/GitRefManager.js'
 import { GitRemoteManager } from '../managers/GitRemoteManager.js'
 import { GitSideBand } from '../models/GitSideBand.js'
+import { addCredentialUsername } from '../utils/addCredentialUsername.js'
 import { filterCapabilities } from '../utils/filterCapabilities.js'
 import { forAwait } from '../utils/forAwait.js'
 import { pkg } from '../utils/pkg.js'
@@ -32,6 +34,7 @@ import { writeReceivePackRequest } from '../wire/writeReceivePackRequest.js'
  * @param {AuthCallback} [args.onAuth]
  * @param {AuthFailureCallback} [args.onAuthFailure]
  * @param {AuthSuccessCallback} [args.onAuthSuccess]
+ * @param {PrePushCallback} [args.onPrePush]
  * @param {string} args.gitdir
  * @param {string} [args.ref]
  * @param {string} [args.remoteRef]
@@ -40,6 +43,7 @@ import { writeReceivePackRequest } from '../wire/writeReceivePackRequest.js'
  * @param {boolean} [args.delete = false]
  * @param {string} [args.url]
  * @param {string} [args.corsProxy]
+ * @param {AbortSignal} [args.signal]
  * @param {Object<string, string>} [args.headers]
  *
  * @returns {Promise<PushResult>}
@@ -53,6 +57,7 @@ export async function _push({
   onAuth,
   onAuthSuccess,
   onAuthFailure,
+  onPrePush,
   gitdir,
   ref: _ref,
   remoteRef: _remoteRef,
@@ -62,6 +67,7 @@ export async function _push({
   delete: _delete = false,
   corsProxy,
   headers = {},
+  signal,
 }) {
   const ref = _ref || (await _currentBranch({ fs, gitdir }))
   if (typeof ref === 'undefined') {
@@ -102,14 +108,15 @@ export async function _push({
   const GitRemoteHTTP = GitRemoteManager.getRemoteHelperFor({ url })
   const httpRemote = await GitRemoteHTTP.discover({
     http,
-    onAuth,
+    onAuth: addCredentialUsername({ config, onAuth }),
     onAuthSuccess,
-    onAuthFailure,
+    onAuthFailure: addCredentialUsername({ config, onAuth: onAuthFailure }),
     corsProxy,
     service: 'git-receive-pack',
     url,
     headers,
     protocolVersion: 1,
+    signal,
   })
   const auth = httpRemote.auth // hack to get new credentials from CredentialManager API
   let fullRemoteRef
@@ -137,6 +144,16 @@ export async function _push({
     httpRemote.refs.get(fullRemoteRef) ||
     '0000000000000000000000000000000000000000'
 
+  if (onPrePush) {
+    const hookCancel = await onPrePush({
+      remote,
+      url,
+      localRef: { ref: _delete ? '(delete)' : fullRef, oid },
+      remoteRef: { ref: fullRemoteRef, oid: oldoid },
+    })
+    if (!hookCancel) throw new UserCanceledError()
+  }
+
   // Remotes can always accept thin-packs UNLESS they specify the 'no-thin' capability
   const thinPack = !httpRemote.capabilities.has('no-thin')
 
@@ -147,13 +164,20 @@ export async function _push({
 
     // If remote branch is present, look for a common merge base.
     if (oldoid !== '0000000000000000000000000000000000000000') {
-      // trick to speed up common force push scenarios
-      const mergebase = await _findMergeBase({
-        fs,
-        cache,
-        gitdir,
-        oids: [oid, oldoid],
-      })
+      // Speeds up common force-push / thin-pack scenarios. The advertised
+      // remote tip may be absent locally (e.g. remote advanced since clone);
+      // that is normal and must not surface as NotFoundError from merge-base.
+      let mergebase = []
+      try {
+        mergebase = await _findMergeBase({
+          fs,
+          cache,
+          gitdir,
+          oids: [oid, oldoid],
+        })
+      } catch (e) {
+        mergebase = []
+      }
       for (const oid of mergebase) finish.push(oid)
       if (thinPack) {
         skipObjects = await listObjects({ fs, cache, gitdir, oids: mergebase })
@@ -255,6 +279,7 @@ export async function _push({
     auth,
     headers,
     body: [...packstream1, ...packstream2],
+    signal,
   })
   const { packfile, progress } = await GitSideBand.demux(res.body)
   if (onMessage) {
@@ -270,10 +295,15 @@ export async function _push({
   }
 
   // Update the local copy of the remote ref
-  if (remote && result.ok && result.refs[fullRemoteRef].ok) {
+  if (
+    remote &&
+    result.ok &&
+    result.refs[fullRemoteRef].ok &&
+    !fullRef.startsWith('refs/tags')
+  ) {
     // TODO: I think this should actually be using a refspec transform rather than assuming 'refs/remotes/{remote}'
     const ref = `refs/remotes/${remote}/${fullRemoteRef.replace(
-      'refs/heads',
+      'refs/heads/',
       ''
     )}`
     if (_delete) {

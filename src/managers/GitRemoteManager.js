@@ -2,11 +2,58 @@ import { UnknownTransportError } from '../errors/UnknownTransportError.js'
 import { UrlParseError } from '../errors/UrlParseError.js'
 import { translateSSHtoHTTP } from '../utils/translateSSHtoHTTP.js'
 
-import { GitRemoteHTTP } from './GitRemoteHTTP'
+import { GitRemoteHTTP } from './GitRemoteHTTP.js'
+
+/**
+ * A class for managing Git remotes and determining the appropriate remote helper for a given URL.
+ */
+export class GitRemoteManager {
+  /**
+   * Determines the appropriate remote helper for the given URL.
+   *
+   * @param {Object} args
+   * @param {string} args.url - The URL of the remote repository.
+   * @returns {Object} - The remote helper class for the specified transport.
+   * @throws {UrlParseError} - If the URL cannot be parsed.
+   * @throws {UnknownTransportError} - If the transport is not supported.
+   */
+  static getRemoteHelperFor({ url }) {
+    // TODO: clean up the remoteHelper API and move into PluginCore
+    const remoteHelpers = new Map()
+    remoteHelpers.set('http', GitRemoteHTTP)
+    remoteHelpers.set('https', GitRemoteHTTP)
+
+    const parts = parseRemoteUrl({ url })
+    if (!parts) {
+      throw new UrlParseError(url)
+    }
+    if (remoteHelpers.has(parts.transport)) {
+      return remoteHelpers.get(parts.transport)
+    }
+    throw new UnknownTransportError(
+      url,
+      parts.transport,
+      parts.transport === 'ssh' ? translateSSHtoHTTP(url) : undefined
+    )
+  }
+}
+
+/**
+ * Parses a remote URL and extracts its transport and address.
+ *
+ * @param {Object} args
+ * @param {string} args.url - The URL of the remote repository.
+ * @returns {Object|undefined} - An object containing the transport and address, or undefined if parsing fails.
+ */
+// git-clone(1) calls this the "shorter scp-like syntax": [user@]host:path. The
+// user is part of the syntax, not part of the word `git`, and a self-hosted
+// forge is as likely to hand out `gitolite@`, `forgejo@` or `ubuntu@`. The host
+// and the user cannot hold a slash, an at sign or a colon, so `https://x` and a
+// `scheme:address` override are left to the expression below.
+const scpLike = /^[^/@:]+@[^/@:]+:/
 
 function parseRemoteUrl({ url }) {
-  // the stupid "shorter scp-like syntax"
-  if (url.startsWith('git@')) {
+  if (scpLike.test(url)) {
     return {
       transport: 'ssh',
       address: url,
@@ -38,27 +85,5 @@ function parseRemoteUrl({ url }) {
       transport: matches[1],
       address: matches[3],
     }
-  }
-}
-
-export class GitRemoteManager {
-  static getRemoteHelperFor({ url }) {
-    // TODO: clean up the remoteHelper API and move into PluginCore
-    const remoteHelpers = new Map()
-    remoteHelpers.set('http', GitRemoteHTTP)
-    remoteHelpers.set('https', GitRemoteHTTP)
-
-    const parts = parseRemoteUrl({ url })
-    if (!parts) {
-      throw new UrlParseError(url)
-    }
-    if (remoteHelpers.has(parts.transport)) {
-      return remoteHelpers.get(parts.transport)
-    }
-    throw new UnknownTransportError(
-      url,
-      parts.transport,
-      parts.transport === 'ssh' ? translateSSHtoHTTP(url) : undefined
-    )
   }
 }

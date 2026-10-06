@@ -1,7 +1,8 @@
 /* eslint-env node, browser, jasmine */
-const { GitRefManager } = require('isomorphic-git/internal-apis')
+import { Errors, branch } from 'isomorphic-git'
+import { GitRefManager, join } from 'isomorphic-git/internal-apis'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('GitRefManager', () => {
   it('packedRefs', async () => {
@@ -90,7 +91,7 @@ describe('GitRefManager', () => {
       filepath: 'refs/remotes/origin',
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
+      [
         "develop",
         "dist",
         "gh-pages",
@@ -107,7 +108,7 @@ describe('GitRefManager', () => {
       filepath: 'refs/tags',
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
+      [
         "local-tag",
         "test-tag",
         "v0.0.1",
@@ -184,7 +185,7 @@ describe('GitRefManager', () => {
       remote: 'origin',
     })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
+      [
         "develop",
         "dist",
         "gh-pages",
@@ -200,7 +201,7 @@ describe('GitRefManager', () => {
     const { fs, gitdir } = await makeFixture('test-GitRefManager')
     const refs = await GitRefManager.listTags({ fs, gitdir })
     expect(refs).toMatchInlineSnapshot(`
-      Array [
+      [
         "local-tag",
         "test-tag",
         "v0.0.1",
@@ -244,5 +245,338 @@ describe('GitRefManager', () => {
         "v0.1.0",
       ]
     `)
+  })
+  it('concurrently reading/writing a ref should not cause a NotFoundError resolving it', async () => {
+    // There are some expect() calls below, but as of 2023-03-15, if this test fails it will do so by logging instances
+    // of 'NotFoundError: Could not find myRef', which should not happen.
+    const { fs, gitdir } = await makeFixture('test-GitRefManager')
+    const ref = 'myRef'
+    const value = '1234567890123456789012345678901234567890'
+    await GitRefManager.writeRef({ fs, gitdir, ref, value }) // Guarantee that the file for the ref exists on disk
+
+    const writePromises = []
+    const resolvePromises = []
+    // Some arbitrary number of iterations that seems to guarantee that the error (pre-fix) is hit.
+    // With 100 the test *mostly* failed but still passed every now and then.
+    const iterations = 500
+
+    for (let i = 0; i < iterations; i++) {
+      // I was only able to cause the error to reproduce consistently by mixing awaited and non-awaited versions of the
+      // calls to writeRef() and resolve(). I tried several variations of the combination but none of them caused the
+      // error to happen as consistently.
+      if (Math.random() < 0.5) {
+        await GitRefManager.writeRef({ fs, gitdir, ref, value })
+      } else {
+        writePromises.push(GitRefManager.writeRef({ fs, gitdir, ref, value }))
+      }
+      if (Math.random() < 0.5) {
+        const resolvedRef = await GitRefManager.resolve({ fs, gitdir, ref })
+        expect(resolvedRef).toMatch(value)
+      } else {
+        resolvePromises.push(GitRefManager.resolve({ fs, gitdir, ref }))
+      }
+    }
+
+    const resolvedRefs = await Promise.all(resolvePromises)
+    for (const resolvedRef of resolvedRefs) {
+      expect(resolvedRef).toMatch(value)
+    }
+    await Promise.all(writePromises)
+  })
+
+  it('writeRef refuses to write over a git system file', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const oid = 'e10ebb90d03eaacca84de1af0a59b444232da99e'
+    const before = await fs.read(`${gitdir}/index`)
+    // `.git/index` is not a ref, and its bare name is a legal one-level ref
+    // name, so an unguarded write lands on the staging area and destroys it.
+    // Canonical git refuses: "cannot lock ref 'index': reference broken".
+    for (const ref of ['config', 'index', 'shallow']) {
+      let error = null
+      try {
+        await GitRefManager.writeRef({ fs, gitdir, ref, value: oid })
+      } catch (err) {
+        error = err
+      }
+      expect(error).not.toBeNull()
+      expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    }
+    expect(await fs.read(`${gitdir}/index`)).toEqual(before)
+  })
+
+  it('deleteRefs refuses to delete a git system file', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const before = await fs.read(`${gitdir}/index`)
+    // deleteRefs goes straight to fs.rm, so an unguarded call removes the
+    // staging area outright rather than merely overwriting it.
+    let error = null
+    try {
+      await GitRefManager.deleteRefs({ fs, gitdir, refs: ['index'] })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(await fs.read(`${gitdir}/index`)).toEqual(before)
+  })
+
+  it('updateRemoteRefs refuses a refspec that targets a git system file', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const before = await fs.read(`${gitdir}/index`)
+    // The local side of a refspec is whatever the config says, so a remote
+    // cannot be trusted to translate only into refs/.
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map([
+          ['refs/heads/main', 'e10ebb90d03eaacca84de1af0a59b444232da99e'],
+        ]),
+        symrefs: new Map(),
+        tags: false,
+        refspecs: ['+refs/heads/main:index'],
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(await fs.read(`${gitdir}/index`)).toEqual(before)
+  })
+
+  it('updateRemoteRefs rejects a bad refspec before pruneTags deletes anything', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const oid = 'e10ebb90d03eaacca84de1af0a59b444232da99e'
+    // pruneTags clears refs/tags before the write loop runs, so a refspec that
+    // is refused later takes the tags down with it. The fetch cannot put them
+    // back: it throws before writing anything.
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map([
+          ['refs/heads/main', oid],
+          ['refs/tags/v1.0.0', oid],
+        ]),
+        symrefs: new Map(),
+        tags: true,
+        refspecs: ['+refs/heads/main:index'],
+        pruneTags: true,
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(
+      await GitRefManager.resolve({ fs, gitdir, ref: 'refs/tags/v1.0.0' })
+    ).toEqual(oid)
+  })
+
+  it('updateRemoteRefs rejects a bad refspec before prune deletes anything', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const oid = 'e10ebb90d03eaacca84de1af0a59b444232da99e'
+    await GitRefManager.writeRef({
+      fs,
+      gitdir,
+      ref: 'refs/remotes/origin/stale',
+      value: oid,
+    })
+    // Same hazard on the prune path: a ref the remote no longer advertises is
+    // deleted before the refspec that targets `.git/index` is refused.
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map([['refs/heads/main', oid]]),
+        symrefs: new Map(),
+        tags: false,
+        refspecs: [
+          '+refs/heads/*:refs/remotes/origin/*',
+          '+refs/heads/main:index',
+        ],
+        prune: true,
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(
+      await GitRefManager.resolve({
+        fs,
+        gitdir,
+        ref: 'refs/remotes/origin/stale',
+      })
+    ).toEqual(oid)
+  })
+
+  it('updateRemoteRefs refuses a tag name containing `..` (GHSA-h3c3-jh3g-8hcc)', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const oid = 'e10ebb90d03eaacca84de1af0a59b444232da99e'
+    // Tags are fetched unconditionally by default and are never passed through
+    // a refspec, so a malicious remote can advertise a tag name containing
+    // `..` to have `join()` collapse it into a path outside gitdir entirely.
+    const marker = 'GHSA-h3c3-jh3g-8hcc-poc-tag'
+    const escapePath = join(gitdir, '..', marker)
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map([[`refs/tags/../../../${marker}`, oid]]),
+        symrefs: new Map(),
+        tags: true,
+        refspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+      })
+    } catch (err) {
+      error = err
+    } finally {
+      await fs.rm(escapePath).catch(() => {})
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(await fs.exists(escapePath)).toBe(false)
+  })
+
+  it('updateRemoteRefs refuses a refspec-translated ref containing `..` that escapes gitdir (GHSA-h3c3-jh3g-8hcc)', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const oid = 'e10ebb90d03eaacca84de1af0a59b444232da99e'
+    // The wildcard capture of a refspec is server-controlled, so a branch name
+    // containing `..` survives translation and still escapes gitdir once
+    // `join()` collapses it.
+    const marker = 'GHSA-h3c3-jh3g-8hcc-poc-branch'
+    const escapePath = join(gitdir, '..', marker)
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map([[`refs/heads/../../../../${marker}`, oid]]),
+        symrefs: new Map(),
+        tags: false,
+        refspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+      })
+    } catch (err) {
+      error = err
+    } finally {
+      await fs.rm(escapePath).catch(() => {})
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(await fs.exists(escapePath)).toBe(false)
+  })
+
+  it('updateRemoteRefs refuses a refspec-translated ref containing `..` that overwrites .git/config (GHSA-h3c3-jh3g-8hcc)', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    const oid = 'e10ebb90d03eaacca84de1af0a59b444232da99e'
+    const before = await fs.read(`${gitdir}/config`, { encoding: 'utf8' })
+    // With the default refspec, `refs/heads/../../../config` translates to
+    // `refs/remotes/origin/../../../config`, which collapses right back onto
+    // `.git/config` and would overwrite it with a bare oid.
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map([['refs/heads/../../../config', oid]]),
+        symrefs: new Map(),
+        tags: false,
+        refspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(await fs.read(`${gitdir}/config`, { encoding: 'utf8' })).toEqual(
+      before
+    )
+  })
+
+  it('updateRemoteRefs refuses a HEAD symbolic ref whose target contains `..` (GHSA-h3c3-jh3g-8hcc)', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    // The destination of a symref translation is validated, but the target it
+    // points at is only ever run through the refspec's plain string
+    // substitution (GitRefSpec#translate), never checked for `..`. The wire
+    // parser also puts it there unrestricted (`symref=HEAD:(.*)`), so a
+    // malicious remote's HEAD symref target survives untouched into the
+    // written `ref: <target>` file content, ready to escape gitdir the next
+    // time something resolves it.
+    let error = null
+    try {
+      await GitRefManager.updateRemoteRefs({
+        fs,
+        gitdir,
+        remote: 'origin',
+        refs: new Map(),
+        symrefs: new Map([
+          ['HEAD', 'refs/heads/../../../../GHSA-h3c3-jh3g-8hcc-poc-symref'],
+        ]),
+        tags: false,
+        refspecs: [
+          '+HEAD:refs/remotes/origin/HEAD',
+          '+refs/heads/*:refs/remotes/origin/*',
+        ],
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(error).not.toBeNull()
+    expect(error.code).toBe(Errors.InvalidRefNameError.code)
+    expect(await fs.exists(`${gitdir}/refs/remotes/origin/HEAD`)).toBe(false)
+  })
+
+  it('expand does not return a git system file', async () => {
+    const { fs, gitdir } = await makeFixture('test-checkout')
+    // The first refpath candidate is the bare name, so a lookup that does not
+    // filter finds `.git/config`, `.git/index` and `.git/shallow` on disk. Those are
+    // repository files, not refs. `resolve` already excludes them (#709).
+    for (const ref of ['config', 'index', 'shallow']) {
+      let error = null
+      try {
+        await GitRefManager.expand({ fs, gitdir, ref })
+      } catch (err) {
+        error = err
+      }
+      expect(error).not.toBeNull()
+      expect(error.code).toBe(Errors.NotFoundError.code)
+    }
+  })
+
+  it('expand still resolves a branch named after a git system file', async () => {
+    const { fs, dir, gitdir } = await makeFixture('test-checkout')
+    await branch({ fs, dir, gitdir, ref: 'config', checkout: false })
+    const oid = await GitRefManager.resolve({
+      fs,
+      gitdir,
+      ref: 'refs/heads/config',
+    })
+    // The filter must drop only the *bare* `config` candidate (which would land
+    // on `.git/config`), never the `refs/heads/config` one. A branch legally
+    // named after a git system file therefore stays fully resolvable.
+    expect(await GitRefManager.expand({ fs, gitdir, ref: 'config' })).toEqual(
+      'refs/heads/config'
+    )
+    // A fully-qualified nested ref whose leaf matches a system-file name is
+    // never a candidate for filtering.
+    expect(
+      await GitRefManager.expand({ fs, gitdir, ref: 'refs/heads/config' })
+    ).toEqual('refs/heads/config')
+    // resolve() carries the same filter line, so verify its positive path too:
+    // the short name must resolve to the branch oid, not try to parse
+    // `.git/config` as a ref.
+    expect(await GitRefManager.resolve({ fs, gitdir, ref: 'config' })).toEqual(
+      oid
+    )
   })
 })

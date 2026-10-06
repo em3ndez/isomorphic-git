@@ -9,6 +9,8 @@ module.exports = [
     entry: {
       index: './src/index.js',
       'internal-apis': './src/internal-apis.js',
+      'managers/index': './src/managers/index.js',
+      'models/index': './src/models/index.js'
     },
     output: {
       path: path.resolve(__dirname),
@@ -30,23 +32,5 @@ module.exports = [
         strict: true,
       }),
     ],
-    module: {
-      rules: [
-        {
-          test: /\.js$/,
-          exclude: /node_modules/,
-          use: {
-            loader: 'babel-loader',
-            options: {
-              babelrc: false,
-              plugins: [
-                '@babel/plugin-proposal-object-rest-spread',
-                '@babel/plugin-transform-async-to-generator',
-              ],
-            },
-          },
-        },
-      ],
-    },
   },
 ]

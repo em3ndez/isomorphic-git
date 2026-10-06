@@ -1,13 +1,14 @@
 /* eslint-env node, browser, jasmine */
-const {
+import {
   Errors,
   deleteBranch,
   currentBranch,
   listBranches,
   listTags,
-} = require('isomorphic-git')
+  getConfig,
+} from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('deleteBranch', () => {
   it('delete branch', async () => {
@@ -68,5 +69,20 @@ describe('deleteBranch', () => {
     expect(head).toBeUndefined()
     const branches = await listBranches({ fs, gitdir })
     expect(branches.includes('master')).toBe(false)
+  })
+
+  it('delete branch and its entry in config', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-deleteBranch')
+    // Test
+    await deleteBranch({ fs, gitdir, ref: 'remote' })
+    const branches = await listBranches({ fs, gitdir })
+    expect(branches.includes('remote')).toBe(false)
+    expect(
+      await getConfig({ fs, gitdir, path: 'branch.remote.remote' })
+    ).toBeUndefined()
+    expect(
+      await getConfig({ fs, gitdir, path: 'branch.remote.merge' })
+    ).toBeUndefined()
   })
 })

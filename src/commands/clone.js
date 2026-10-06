@@ -17,6 +17,7 @@ import { GitConfigManager } from '../managers/GitConfigManager.js'
  * @param {AuthCallback} [args.onAuth]
  * @param {AuthFailureCallback} [args.onAuthFailure]
  * @param {AuthSuccessCallback} [args.onAuthSuccess]
+ * @param {PostCheckoutCallback} [args.onPostCheckout]
  * @param {string} [args.dir]
  * @param {string} args.gitdir
  * @param {string} args.url
@@ -31,6 +32,8 @@ import { GitConfigManager } from '../managers/GitConfigManager.js'
  * @param {string[]} args.exclude
  * @param {boolean} args.relative
  * @param {Object<string, string>} args.headers
+ * @param {boolean} [args.nonBlocking]
+ * @param {number} [args.batchSize]
  *
  * @returns {Promise<void>} Resolves successfully when clone completes
  *
@@ -44,6 +47,7 @@ export async function _clone({
   onAuth,
   onAuthSuccess,
   onAuthFailure,
+  onPostCheckout,
   dir,
   gitdir,
   url,
@@ -58,6 +62,8 @@ export async function _clone({
   noCheckout,
   noTags,
   headers,
+  nonBlocking,
+  batchSize = 100,
 }) {
   try {
     await _init({ fs, gitdir })
@@ -96,11 +102,14 @@ export async function _clone({
       fs,
       cache,
       onProgress,
+      onPostCheckout,
       dir,
       gitdir,
       ref,
       remote,
       noCheckout,
+      nonBlocking,
+      batchSize,
     })
   } catch (err) {
     // Remove partial local repository, see #1283

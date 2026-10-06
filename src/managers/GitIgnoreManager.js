@@ -1,3 +1,5 @@
+import '../typedefs.js'
+
 import ignore from 'ignore'
 
 import { basename } from '../utils/basename.js'
@@ -5,8 +7,18 @@ import { dirname } from '../utils/dirname.js'
 import { join } from '../utils/join.js'
 
 // I'm putting this in a Manager because I reckon it could benefit
-// from a LOT of cacheing.
+// from a LOT of caching.
 export class GitIgnoreManager {
+  /**
+   * Determines whether a given file is ignored based on `.gitignore` rules and exclusion files.
+   *
+   * @param {Object} args
+   * @param {FSClient} args.fs - A file system implementation.
+   * @param {string} args.dir - The working directory.
+   * @param {string} [args.gitdir=join(dir, '.git')] - [required] The [git directory](dir-vs-gitdir.md) path
+   * @param {string} args.filepath - The path of the file to check.
+   * @returns {Promise<boolean>} - `true` if the file is ignored, `false` otherwise.
+   */
   static async isIgnored({ fs, dir, gitdir = join(dir, '.git'), filepath }) {
     // ALWAYS ignore ".git" folders.
     if (basename(filepath) === '.git') return true
@@ -35,14 +47,17 @@ export class GitIgnoreManager {
       })
     }
     let ignoredStatus = false
-    for (const p of pairs) {
+    for (const [index, p] of pairs.entries()) {
       let file
       try {
         file = await fs.read(p.gitignore, 'utf8')
       } catch (err) {
         if (err.code === 'NOENT') continue
       }
-      const ign = ignore().add(excludes)
+      const ign = ignore()
+      // The patterns in .git/info/exclude are relative to the working directory,
+      // so only the first pair, which holds the full filepath, can use them.
+      if (index === 0) ign.add(excludes)
       ign.add(file)
       // If the parent directory is excluded, we are done.
       // "It is not possible to re-include a file if a parent directory of that file is excluded. Git doesn’t list excluded directories for performance reasons, so any patterns on contained files have no effect, no matter where they are defined."

@@ -24,7 +24,7 @@ console.log(files)
 ## LightningFS
 
 If you are writing code for the browser, you will need something that emulates the `fs` API.
-While BrowserFS (see next section) has more features, [LightningFS](https://github.com/isomorphic-git/lightning-fs) might very well fit your needs.
+While ZenFS (see next section) has more features, [LightningFS](https://github.com/isomorphic-git/lightning-fs) might very well fit your needs.
 It was designed from scratch for `isomorphic-git` (by the same author) to eek out more performance
 for fewer bytes. As an added bonus it's dead simple to configure.
 
@@ -41,32 +41,150 @@ console.log(files);
 You can configure LightningFS to load files from an HTTP server as well, which makes it easy to prepopulate a browser file system
 with a directory on your server. See the LightningFS documentation for an example of how to do this.
 
-## BrowserFS
+## ZenFS
 
-At the time of writing, the most complete option is [BrowserFS](https://github.com/jvilk/BrowserFS).
+At the time of writing, the most complete option is [ZenFS](https://github.com/zen-fs/core).
 It has a few more steps involved to set up than in Node, as seen below:
 
 ```html
-<script src="https://unpkg.com/browserfs@beta"></script>
-<script src="https://unpkg.com/isomorphic-git"></script>
-<script>
-BrowserFS.configure({ fs: "IndexedDB", options: {} }, function (err) {
-  if (err) return console.log(err);
-  const fs = BrowserFS.BFSRequire("fs");
-  const files = git.listFiles({ fs dir: '/' });
-  console.log(files);
-});
+<script type="importmap">
+  {
+    "imports": {
+      "isomorphic-git": "https://esm.sh/isomorphic-git",
+      "@zenfs/core": "https://esm.sh/@zenfs/core",
+      "@zenfs/dom": "https://esm.sh/@zenfs/dom"
+    }
+  }
+</script>
+<script type="module">
+import { fs, configureSingle } from "@zenfs/core";
+import { IndexedDB } from "@zenfs/dom";
+import git from "isomorphic-git";
+
+await configureSingle({ backend: IndexedDB });
+
+const files = git.listFiles({ fs, dir: '/' });
+console.log(files);
+
 </script>
 ```
 
-Besides IndexedDB, BrowserFS supports many different backends with different performance characteristics (some backends support sync operations, some only async), as well as different features such as proxying a static file server as a read-only file system, mounting ZIP files as file systems, or overlaying a writeable in-memory filesystem on top of a read-only filesystem.
+Besides IndexedDB, ZenFS supports many different backends with different performance characteristics (all backends support sync operations), as well as different features such as proxying a static file server as a read-only file system, mounting ZIP files as file systems, or overlaying a writeable in-memory filesystem on top of a read-only filesystem.
 You don't need to know all these features, but familiarizing yourself with the different options may be necessary if you hit a storage limit or performance bottleneck in the IndexedDB backend I suggested above.
 
 An [advanced example usage](https://github.com/isomorphic-git/isomorphic-git/blob/53f2e909030adb1c6ae855b14f3a2474ca93ce71/__tests__/__helpers__/FixtureFS.js#L12) is in the old unit tests for isomorphic-git.
-It uses HTTPRequestFS to mount (read-only) the test fixtures directory which is stored on the server, then adds a read-write InMemoryFS layer using OverlayFS so that the tests can modify files locally.
-In between tests it empties the InMemoryFS, restoring the file system to a pristine state.
+It uses the `Fetch` backend to mount (read-only) the test fixtures directory which is stored on the server, then adds a read-write `InMemory` layer using the `Overlay` backend so that the tests can modify files locally.
+In between tests it empties the `InMemory`, restoring the file system to a pristine state.
 The current unit tests use LightningFS instead, which was built with this HTTP-backed overlay behavior by default, because I find it so useful.
 
+
+## Environments without IndexedDB (e.g. Cloudflare Workers, Deno Deploy)
+
+Cloudflare Workers, Deno Deploy, and other **edge runtimes** do not expose `IndexedDB`.
+This means that `LightningFS` throws a `ReferenceError: indexedDB is not defined` at
+startup, and ZenFS's `IndexedDB` backend won't work either.
+
+The good news is that `isomorphic-git` itself has **no dependency on IndexedDB** — it
+just needs any object implementing the `fs.promises` interface.
+The fix lives entirely in the **filesystem layer**.
+
+### Option 1 — LightningFS with a MemoryBackend (recommended)
+
+`LightningFS` is designed to be storage-agnostic. Its `DefaultBackend` uses IndexedDB
+under the hood, but you can swap it out via the `backend` option with any object that
+implements five low-level methods: `saveSuperblock`, `loadSuperblock`, `readFile(inode)`,
+`writeFile(inode, data)`, and `unlink(inode)`.
+
+A `MemoryBackend` backed by a plain `Map` requires no platform APIs and works everywhere:
+
+```js
+// MemoryBackend.js
+class MemoryBackend {
+  constructor() {
+    this._map = new Map()
+  }
+  saveSuperblock(superblock) {
+    this._map.set('!root', superblock)
+  }
+  loadSuperblock() {
+    return this._map.get('!root') || null
+  }
+  readFile(inode) {
+    return this._map.get(inode) || null
+  }
+  writeFile(inode, data) {
+    this._map.set(inode, data)
+  }
+  unlink(inode) {
+    this._map.delete(inode)
+  }
+  async wipe() {
+    this._map.clear()
+  }
+}
+```
+
+Pass it to `LightningFS` via the `backend` option:
+
+```js
+import LightningFS from '@isomorphic-git/lightning-fs'
+import git from 'isomorphic-git'
+import http from 'isomorphic-git/http/web'
+
+import { MemoryBackend } from '@isomorphic-git/lightning-fs'  // once the PR is merged
+// or paste the class above locally in the meantime
+
+const fs = new LightningFS('mem', { backend: new MemoryBackend() })
+
+await git.clone({
+  fs,
+  http,
+  dir: '/',
+  url: 'https://github.com/example/repo',
+  singleBranch: true,
+  depth: 1,
+})
+```
+
+> **Note:** Data is ephemeral — it lives in the JS heap and is lost when the runtime
+> terminates. For persistence across Cloudflare Worker requests, see [Option 3 in the Cloudflare Workers guide](./guide-cloudflare-workers.md#option-3--persistent-storage-durable-objects-backend) to replace `MemoryBackend`
+> with a backend backed by [Durable Object storage](https://developers.cloudflare.com/durable-objects/) 
+> using the same five-method interface.
+
+### Option 2 — ZenFS with the InMemory backend
+
+[ZenFS](https://github.com/zen-fs/core) provides an `InMemory` backend that also avoids
+IndexedDB and implements the full `fs.promises` API:
+
+```js
+import { fs, configureSingle } from '@zenfs/core'
+import { InMemory } from '@zenfs/core'
+import git from 'isomorphic-git'
+import http from 'isomorphic-git/http/web'
+
+await configureSingle({ backend: InMemory })
+
+await git.clone({
+  fs,
+  http,
+  dir: '/',
+  url: 'https://github.com/example/repo',
+  singleBranch: true,
+  depth: 1,
+})
+```
+
+### Compatibility notes
+
+| Runtime | LightningFS (default) | LightningFS + MemoryBackend | ZenFS InMemory |
+|---|---|---|---|
+| Node.js | ❌ (no IndexedDB; use native `fs`) | ✅ | ✅ |
+| Browser | ✅ | ✅ | ✅ |
+| Cloudflare Workers | ❌ (no IndexedDB) | ✅ | ✅ |
+| Deno Deploy | ❌ (no IndexedDB) | ✅ | ✅ |
+| Bun | ✅ | ✅ | ✅ |
+
+---
 
 # Implementing your own `fs`
 

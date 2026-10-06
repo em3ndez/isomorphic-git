@@ -6,6 +6,8 @@ import { InvalidRefNameError } from '../errors/InvalidRefNameError.js'
 import { GitRefManager } from '../managers/GitRefManager.js'
 import { FileSystem } from '../models/FileSystem.js'
 import { assertParameter } from '../utils/assertParameter.js'
+import { discoverGitdir } from '../utils/discoverGitdir.js'
+import validRef from '../utils/isValidRef.js'
 import { join } from '../utils/join.js'
 
 /**
@@ -57,30 +59,34 @@ export async function writeRef({
 
     const fs = new FileSystem(_fs)
 
-    if (ref !== cleanGitRef.clean(ref)) {
+    if (!validRef(ref, true)) {
       throw new InvalidRefNameError(ref, cleanGitRef.clean(ref))
     }
 
-    if (!force && (await GitRefManager.exists({ fs, gitdir, ref }))) {
+    const updatedGitdir = await discoverGitdir({ fsp: fs, dotgit: gitdir })
+    if (
+      !force &&
+      (await GitRefManager.exists({ fs, gitdir: updatedGitdir, ref }))
+    ) {
       throw new AlreadyExistsError('ref', ref)
     }
 
     if (symbolic) {
       await GitRefManager.writeSymbolicRef({
         fs,
-        gitdir,
+        gitdir: updatedGitdir,
         ref,
         value,
       })
     } else {
       value = await GitRefManager.resolve({
         fs,
-        gitdir,
+        gitdir: updatedGitdir,
         ref: value,
       })
       await GitRefManager.writeRef({
         fs,
-        gitdir,
+        gitdir: updatedGitdir,
         ref,
         value,
       })

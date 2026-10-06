@@ -1,11 +1,11 @@
 /* eslint-env node, browser, jasmine */
-const git = require('isomorphic-git')
+import * as git from 'isomorphic-git'
 
 describe('exports', () => {
   it('exposes only the intended API functions', async () => {
     const names = Object.keys(git)
     expect(names.sort()).toMatchInlineSnapshot(`
-      Array [
+      [
         "Errors",
         "STAGE",
         "TREE",
@@ -17,6 +17,7 @@ describe('exports', () => {
         "annotatedTag",
         "branch",
         "checkout",
+        "cherryPick",
         "clone",
         "commit",
         "currentBranch",
@@ -43,6 +44,7 @@ describe('exports', () => {
         "listBranches",
         "listFiles",
         "listNotes",
+        "listRefs",
         "listRemotes",
         "listServerRefs",
         "listTags",
@@ -63,6 +65,7 @@ describe('exports', () => {
         "resetIndex",
         "resolveRef",
         "setConfig",
+        "stash",
         "status",
         "statusMatrix",
         "tag",

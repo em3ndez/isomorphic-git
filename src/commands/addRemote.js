@@ -6,6 +6,7 @@ import cleanGitRef from 'clean-git-ref'
 import { AlreadyExistsError } from '../errors/AlreadyExistsError.js'
 import { InvalidRefNameError } from '../errors/InvalidRefNameError.js'
 import { GitConfigManager } from '../managers/GitConfigManager.js'
+import validRef from '../utils/isValidRef.js'
 
 /**
  * @param {object} args
@@ -19,7 +20,7 @@ import { GitConfigManager } from '../managers/GitConfigManager.js'
  *
  */
 export async function _addRemote({ fs, gitdir, remote, url, force }) {
-  if (remote !== cleanGitRef.clean(remote)) {
+  if (!validRef(remote, true)) {
     throw new InvalidRefNameError(remote, cleanGitRef.clean(remote))
   }
   const config = await GitConfigManager.get({ fs, gitdir })

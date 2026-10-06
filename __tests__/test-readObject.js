@@ -1,7 +1,7 @@
 /* eslint-env node, browser, jasmine */
-const { Errors, readObject } = require('isomorphic-git')
+import { Errors, readObject } from 'isomorphic-git'
 
-const { makeFixture } = require('./__helpers__/FixtureFS.js')
+import { makeFixture } from './__helpers__/FixtureFS.js'
 
 describe('readObject', () => {
   it('test missing', async () => {
@@ -21,6 +21,21 @@ describe('readObject', () => {
     expect(error).not.toBeNull()
     expect(error instanceof Errors.NotFoundError).toBe(true)
   })
+  it.each([
+    ['loose', 'e10ebb90d03eaacca84de1af0a59b444232da99e'],
+    ['packed', '0b8faa11b353db846b40eb064dfb299816542a46'],
+  ])('rejects an invalid format for a %s object', async (_, oid) => {
+    const { fs, gitdir } = await makeFixture('test-readObject')
+    let error = null
+    try {
+      // @ts-ignore
+      await readObject({ fs, gitdir, oid, format: 'invalid' })
+    } catch (err) {
+      error = err
+    }
+    expect(error instanceof Errors.InternalError).toBe(true)
+    expect(error.data.message).toBe('invalid requested format "invalid"')
+  })
   it('parsed', async () => {
     // Setup
     const { fs, gitdir } = await makeFixture('test-readObject')
@@ -31,16 +46,16 @@ describe('readObject', () => {
       oid: 'e10ebb90d03eaacca84de1af0a59b444232da99e',
     })
     expect(ref).toMatchInlineSnapshot(`
-      Object {
+      {
         "format": "parsed",
-        "object": Object {
-          "author": Object {
+        "object": {
+          "author": {
             "email": "wmhilton@gmail.com",
             "name": "Will Hilton",
             "timestamp": 1502484200,
             "timezoneOffset": 240,
           },
-          "committer": Object {
+          "committer": {
             "email": "wmhilton@gmail.com",
             "name": "Will Hilton",
             "timestamp": 1502484200,
@@ -65,7 +80,7 @@ describe('readObject', () => {
       -----END PGP SIGNATURE-----",
           "message": "Improve resolveRef to handle more kinds of refs. Add tests
       ",
-          "parent": Array [
+          "parent": [
             "b4f8206d9e359416b0f34238cbeb400f7da889a8",
           ],
           "tree": "e0b8f3574060ee24e03e4af3896f65dd208a60cc",
@@ -132,7 +147,7 @@ describe('readObject', () => {
       '"78019d93c9cea3481084e7cc53d4ddea76010586d1cc68001b0cde30fc06ec1b4b4161966237e6e9dbd373ed53e729158a487d522a625a55f9005896e5ff183a8c01869194f2c206411162cc210c798cc294976431158524e1a0148a308e9926ec703d8008a51207c544c6bc2023568c60ca238e97e2084708c274938492248712138e03a11df0f3b204fbbc1c680dfe7a55e4e7f66f568579f93da6d53f8015208724c44108bec1cf05e6a37e1007fc3bd9acc9fa3c03dffe1b75679867601b36704de3ac7cdd9cdd4f9d011eeefa9cd67f02a31e6d034c2c0318905fcd58551455c91443bd5a8f2789a8a2506b67ddadf1e0bbb9180a9e70b3d71f4837c595c5f2b6a306fdc0615590b39e013cb1674ede3a0795e8c354ac467725091cbf26b7b47b7314fb7e22de9d22ae8b79566e835aa78b5798b2923966cc9ebf4e0c2042301c4fd731d294c34bb2fcc99b68b0fb5a5e9e72d956493569c877afda715cd1866271ed6f9ca9e8beb6b0898ad71eed18700a280905b937fdc75a0fe34720aaef7b4bf477915a4729d3f4c9719767deaa66d4db9ba0e54e043d0be5702f8565f6f89101ad567022a9c971b52a5e69508edc3d3106555e954fbe29d833f65b87dfc88bb31064b3509f038b955a778e97a850f4cb9d012215c8265c9fda923db4be2aef74756cb4e6f94eaa46196c2a96ecad47215fe6aa70b4268dc873e670fbc1250e8ae4cd8501b5d90436aab3375ae4dbbb0b82796ef2ebb55e175ebd1e0fd930198d545ff49c5291b5b55c7ef6dcb5bace713faa177c5931609be8ad5070f6e9fc38bef26540b6b43352cfa2767424c9dd46d4cf4fda78f7d65c7a26902ee5ba6537e2dee89732ed0afcf926cf3d60155abc22cca6f384d16672ce7b4f529452de124cf963df3c319d6c2e7fc7da5eb7219fb98d76488e8eea68e88b01010b5555df4a35d54e813547428beb2e5de183934809ca36d610bf97d6cb0af52a4a8669480879bea3d2f2b2cc487d0b0c8895f0b576efe6c3e01dda2931cbe68f4d3f85f0a99b2e7e56bbc5c4d1a8117749fc0b77b9f88e379d12f27ebcb6c75ba6440cb8e633e1a2cace3a9ec8f5dc72dbaa66c0df68b53d33ffd76477defeaa248c59351d9d30e8704fcb093b3805030524ac9312838a761814799df480a61f4bda7f074a928001f743cffc00fa8263c9"'
     )
   })
-  it('from packfile', async () => {
+  it('from packfile deflated', async () => {
     // Setup
     const { fs, gitdir } = await makeFixture('test-readObject')
     // Test
@@ -141,6 +156,48 @@ describe('readObject', () => {
       gitdir,
       oid: '0b8faa11b353db846b40eb064dfb299816542a46',
       format: 'deflated',
+    })
+    // packed objects will always be returned as 'content' format
+    expect(ref.format).toEqual('content')
+    expect(ref.type).toEqual('commit')
+    expect(ref.source).toBe(
+      'objects/pack/pack-1a1e70d2f116e8cb0cb42d26019e5c7d0eb01888.pack'
+    )
+    if (ref.format !== 'content') throw new Error('wrong type')
+    expect(Buffer.from(ref.object).toString('hex')).toMatchInlineSnapshot(
+      `"7472656520346431363665323666636639666537623231383633343336313337633434613339613231613930660a706172656e7420666264353662343964343030613139656531383561653733353431376264623334633038343632310a617574686f722057696c6c69616d2048696c746f6e203c776d68696c746f6e40676d61696c2e636f6d3e2031353038323034303133202d303430300a636f6d6d69747465722057696c6c69616d2048696c746f6e203c776d68696c746f6e40676d61696c2e636f6d3e2031353038323034303133202d303430300a0a696e646578206f6e206d61737465723a2066626435366234204164642027756e706b6727206b657920746f207061636b6167652e6a736f6e0a"`
+    )
+  })
+  it('from packfile wrapped', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-readObject')
+    // Test
+    const ref = await readObject({
+      fs,
+      gitdir,
+      oid: '0b8faa11b353db846b40eb064dfb299816542a46',
+      format: 'wrapped',
+    })
+    // packed objects will always be returned as 'content' format
+    expect(ref.format).toEqual('content')
+    expect(ref.type).toEqual('commit')
+    expect(ref.source).toBe(
+      'objects/pack/pack-1a1e70d2f116e8cb0cb42d26019e5c7d0eb01888.pack'
+    )
+    if (ref.format !== 'content') throw new Error('wrong type')
+    expect(Buffer.from(ref.object).toString('hex')).toMatchInlineSnapshot(
+      `"7472656520346431363665323666636639666537623231383633343336313337633434613339613231613930660a706172656e7420666264353662343964343030613139656531383561653733353431376264623334633038343632310a617574686f722057696c6c69616d2048696c746f6e203c776d68696c746f6e40676d61696c2e636f6d3e2031353038323034303133202d303430300a636f6d6d69747465722057696c6c69616d2048696c746f6e203c776d68696c746f6e40676d61696c2e636f6d3e2031353038323034303133202d303430300a0a696e646578206f6e206d61737465723a2066626435366234204164642027756e706b6727206b657920746f207061636b6167652e6a736f6e0a"`
+    )
+  })
+  it('from packfile content', async () => {
+    // Setup
+    const { fs, gitdir } = await makeFixture('test-readObject')
+    // Test
+    const ref = await readObject({
+      fs,
+      gitdir,
+      oid: '0b8faa11b353db846b40eb064dfb299816542a46',
+      format: 'content',
     })
     expect(ref.format).toEqual('content')
     expect(ref.type).toEqual('commit')
@@ -258,110 +315,110 @@ describe('readObject', () => {
     )
     expect(ref.oid).toEqual('6257985e3378ec42a03a57a7dc8eb952d69a5ff3')
     expect(ref.object).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "mode": "100644",
           "oid": "375f9392774e7a7c8a1ae23a6d13b5c133e42c45",
           "path": ".babelrc",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "bbf3e21f43fa4fe25eb925bfcb7c0434f7c2dc7d",
           "path": ".editorconfig",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "4a58bdcdef3eb91264dfca0279959d98c16568d5",
           "path": ".flowconfig",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "2b90c4a2353d2977e158c21f4315664063770212",
           "path": ".gitignore",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "63ed03aea9d828c86ebde989b336f5e978fdc3f1",
           "path": ".travis.yml",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "c675a17ccb1578bca836decf90205fdad743827d",
           "path": "LICENSE.md",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "9761716146bbdb47f8a7de3d9df98777df9674f3",
           "path": "README.md",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "040000",
           "oid": "63a8130fa218d20b0009c1126375a105c1adba8a",
           "path": "__tests__",
           "type": "tree",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "bdc76cc9d0da964db203f47333d05185a22d6a18",
           "path": "ci.karma.conf.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "4551a1856279dde6ae9d65862a1dff59a5f199d8",
           "path": "cli.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "040000",
           "oid": "69be3467cb125fbc55eb5c7e50caa556fb0e34b4",
           "path": "dist",
           "type": "tree",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "af56d48cb8af9c5ba3547c12c4a4a61fc16ff971",
           "path": "karma.conf.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "00b91c8b8ddfb43df70ef334088b7d840e5053db",
           "path": "package-lock.json",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "7b12188e7e351c1a761b76b38e36c13b5cba6c1f",
           "path": "package-scripts.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "bfe174beb9bf440c1c49b6fba0094f16cf9c9490",
           "path": "package.json",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "a86d1a6c3997dc73e8bf8687edb15fc087892e9d",
           "path": "rollup.config.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "040000",
           "oid": "ae7b4f3ac2c570dc3597124fc108ecb9d6c2b4fd",
           "path": "src",
           "type": "tree",
         },
-        Object {
+        {
           "mode": "040000",
           "oid": "0a7ce5f20a8ccba18463a2ae990baf63ba1e3b43",
           "path": "testling",
@@ -385,116 +442,116 @@ describe('readObject', () => {
     expect(ref.type).toEqual('tree')
     expect(ref.oid).toEqual('7704a6e8a802efcdbe6cf3dfa114c105f1d5c67a')
     expect(ref.object).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "mode": "100644",
           "oid": "c0c25b4e4c418eff366132e6cb2b16c8d9a7798c",
           "path": "add.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "85cd837ae2a5577a6247937cb1e0404a0101705b",
           "path": "checkout.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "5264f23285d8be3ce45f95c102001ffa1d5391d3",
           "path": "clone.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "1ac40ceb71b7fd182808decfd14d644d65887d52",
           "path": "commit.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "9d9432818d654e7884b41223f7ae8ef4defec959",
           "path": "config.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "1c473b86b3e693e34363b4be9cdcd0c50e0bfed4",
           "path": "fetch.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "de854e230503c548d530a71442ba0d03824eefbb",
           "path": "findRoot.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "f309f5b14fc9897a3816547d0129f117788ffef1",
           "path": "init.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "9184088c0d0b75dba8108433f8d26fece09c36dc",
           "path": "list.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "1f67512a0eb40a8a955ad3ca56dfcd4231a935f9",
           "path": "listBranches.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "d740a56e95cada64654c6e9e52616cc3318be4cb",
           "path": "log.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "600a1006b12f2c7244fc034d8c64ad21c9597237",
           "path": "pack.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "9b3a67837dcabde4eee4862d6ad78b3ebf68915e",
           "path": "push.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "46e96d7d5b4cb91210ce169824feda77c3bd6cc3",
           "path": "remove.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "3a3ea110eb4967ca7e9d3eef41b073e779c329d1",
           "path": "resolveRef.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "f913d87e7844579afbe02fe116c88a6b51bf1bca",
           "path": "status.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "67e79f9e10d44eb692be57e746639b9f2b54e816",
           "path": "unpack.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "007e7738d257fe78da6938990a40e4310dfc0757",
           "path": "verify.js",
           "type": "blob",
         },
-        Object {
+        {
           "mode": "100644",
           "oid": "9584ccddb392f8185101dca41496fba0fd264d6a",
           "path": "version.js",
